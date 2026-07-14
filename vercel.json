@@ -3,7 +3,9 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "rewrites": [
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    { "source": "/api/football/:path*", "destination": "/api/football?path=:path*" },
+    { "source": "/api/odds/:path*",     "destination": "/api/odds?path=:path*" },
+    { "source": "/((?!api/).*)",        "destination": "/index.html" }
   ],
   "headers": [
     {
