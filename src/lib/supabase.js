@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL || ''
+// Accept both names — the .env in the wild uses VITE_SUPABASE_PROJECT_URL.
+const url = import.meta.env.VITE_SUPABASE_URL || import.meta.env.VITE_SUPABASE_PROJECT_URL || ''
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
 
 /* If the env vars are missing (e.g. a local checkout without keys), the app
