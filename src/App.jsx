@@ -18,6 +18,12 @@ import {
 import { ODDS_SPORTS, lookupOddsForFixture } from './lib/odds.js'
 import { useApiHealth } from './hooks/useApiHealth.js'
 import { useFixtures } from './hooks/useFixtures.js'
+import { authConfigured } from './lib/supabase.js'
+import {
+  signUpWithEmail, signInWithEmail, signInWithGoogle, signOut, friendlyAuthError,
+} from './lib/auth.js'
+import { useAuth } from './hooks/useAuth.js'
+import { useUserData } from './hooks/useUserData.js'
 
 /* ============================================================
  * QUIET SIGNAL — design language
@@ -119,7 +125,7 @@ function GlobalStyles() {
       }
       /* The theme vars live on the wrapper div, so the page base must paint
          there too — body sits outside the var scope and can't resolve them. */
-      [data-theme] { background: var(--iq-bg); min-height: 100vh; }
+      [data-theme] { background: var(--iq-bg); min-height: 100vh; min-height: 100dvh; width: 100%; }
       /* Dark background — one barely-visible neutral wash on a near-black base.
          Calm and chromatically silent; richness comes from the surfaces above. */
       [data-theme="dark"] {
@@ -247,7 +253,7 @@ function useTheme() {
     return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   })
   useEffect(() => { writeRaw(LS_THEME, theme) }, [theme])
-  return [theme, () => setTheme(t => (t === 'dark' ? 'light' : 'dark'))]
+  return [theme, () => setTheme(t => (t === 'dark' ? 'light' : 'dark')), setTheme]
 }
 
 function useWindowWidth() {
@@ -2126,10 +2132,185 @@ function RecordScreen({ fixtures, analysisCache, agentPerf, onResolve, onOpen })
 }
 
 /* ============================================================
+ * AUTH — sign in / sign up (Supabase, Google OAuth + email)
+ * ============================================================ */
+
+/* The one deliberately multi-color mark in the app: users trust the familiar
+ * Google G, so it keeps its standard colors. Inline SVG, no raster asset. */
+const GoogleG = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true" style={{ flexShrink: 0 }}>
+    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+  </svg>
+)
+
+function ButtonSpinner({ color = 'currentColor' }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 44 44" fill="none" aria-hidden="true"
+      style={{ animation: 'iq-think 1s linear infinite', display: 'block' }}>
+      <circle cx="22" cy="22" r="18" stroke={color} strokeOpacity="0.25" strokeWidth="5" />
+      <path d="M22 4a18 18 0 0114 6.7" stroke={color} strokeWidth="5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
+function AuthInput({ label, type: inputType, value, onChange, autoComplete, disabled }) {
+  return (
+    <label style={{ display: 'block' }}>
+      <span style={{ ...type.small, fontSize: 12.5, fontWeight: 560, color: T.sub, display: 'block', marginBottom: 7 }}>{label}</span>
+      <input type={inputType} value={value} onChange={e => onChange(e.target.value)}
+        autoComplete={autoComplete} disabled={disabled} required
+        style={{
+          width: '100%', background: T.card2, color: T.ink,
+          border: `1px solid ${T.line}`, borderRadius: 12, padding: '12px 15px',
+          fontFamily: T.sans, fontSize: 15, outline: 'none',
+        }} />
+    </label>
+  )
+}
+
+function AuthScreen({ theme, initialError, onClearInitialError }) {
+  const [mode, setMode] = useState('signin') // 'signin' | 'signup'
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(null) // null | 'google' | 'email'
+  const [error, setError] = useState(null)
+  const [checkEmail, setCheckEmail] = useState(false)
+
+  const shownError = error || initialError
+
+  function switchMode(m) {
+    setMode(m); setError(null); setCheckEmail(false)
+    onClearInitialError?.()
+  }
+
+  async function handleGoogle() {
+    setBusy('google'); setError(null); onClearInitialError?.()
+    try {
+      const { error: err } = await signInWithGoogle()
+      if (err) { setError(friendlyAuthError(err.message)); setBusy(null) }
+      // On success the browser navigates away — leave the button in its loading state.
+    } catch (e) {
+      setError(friendlyAuthError(e.message)); setBusy(null)
+    }
+  }
+
+  async function handleEmail(e) {
+    e.preventDefault()
+    setBusy('email'); setError(null); onClearInitialError?.()
+    try {
+      if (mode === 'signup') {
+        const { data, error: err } = await signUpWithEmail(email.trim(), password)
+        if (err) setError(friendlyAuthError(err.message))
+        else if (!data?.session) setCheckEmail(true)
+        // With a session, onAuthChange moves the user into the app.
+      } else {
+        const { error: err } = await signInWithEmail(email.trim(), password)
+        if (err) setError(friendlyAuthError(err.message))
+      }
+    } catch (e2) {
+      setError(friendlyAuthError(e2.message))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const busyAny = busy != null
+
+  return (
+    <div data-theme={theme} style={{
+      minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center',
+      padding: '32px 20px', position: 'relative', zIndex: 1,
+    }}>
+      <GlobalStyles />
+      <div style={{ width: '100%', maxWidth: 400 }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 28 }}>
+          <Wordmark size={24} />
+        </div>
+        <h1 style={{ ...type.display, fontSize: 32, color: T.ink, textAlign: 'center', margin: '0 0 26px' }}>
+          {mode === 'signin' ? 'Welcome back.' : 'Make it yours.'}
+        </h1>
+
+        <Card className="iq-elevated" style={{ padding: 28 }}>
+          {checkEmail ? (
+            <div style={{ textAlign: 'center', padding: '18px 4px' }}>
+              <div style={{ ...type.title, fontSize: 19, color: T.ink }}>Check your email.</div>
+              <div style={{ ...type.small, marginTop: 10 }}>
+                We've sent a confirmation link to <strong style={{ color: T.ink, fontWeight: 560 }}>{email}</strong>.
+                Follow it and you'll land right back here, signed in.
+              </div>
+              <button onClick={() => switchMode('signin')} style={{
+                background: 'transparent', border: 'none', cursor: 'pointer',
+                ...type.small, color: T.accent, fontWeight: 560, marginTop: 18,
+              }}>Back to sign in</button>
+            </div>
+          ) : (
+            <>
+              <button onClick={handleGoogle} disabled={busyAny} className="iq-lift" style={{
+                width: '100%', background: T.card2, color: T.ink,
+                border: `1px solid ${T.lineHi}`, borderRadius: 999, padding: '13px 22px',
+                fontFamily: T.sans, fontSize: 15, fontWeight: 560,
+                cursor: busyAny ? 'default' : 'pointer', opacity: busy === 'email' ? 0.5 : 1,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+              }}>
+                {busy === 'google'
+                  ? <ButtonSpinner />
+                  : <><GoogleG size={18} /> Continue with Google</>}
+              </button>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '22px 0' }}>
+                <span style={{ flex: 1, height: 1, background: T.line }} />
+                <span style={{ ...type.small, fontSize: 12, color: T.faint }}>or continue with email</span>
+                <span style={{ flex: 1, height: 1, background: T.line }} />
+              </div>
+
+              <form onSubmit={handleEmail} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <AuthInput label="Email" type="email" value={email} onChange={setEmail}
+                  autoComplete="email" disabled={busyAny} />
+                <AuthInput label="Password" type="password" value={password} onChange={setPassword}
+                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} disabled={busyAny} />
+                <Button kind="primary" disabled={busyAny}
+                  style={{ width: '100%', padding: '13px 22px', fontSize: 15, marginTop: 4 }}
+                  onClick={() => {}}>
+                  {busy === 'email'
+                    ? <ButtonSpinner />
+                    : mode === 'signin' ? 'Sign in' : 'Create account'}
+                </Button>
+              </form>
+
+              {shownError && (
+                <div role="alert" style={{
+                  ...type.small, fontSize: 13.5, color: T.bad, background: T.badBg,
+                  borderRadius: 12, padding: '11px 15px', marginTop: 16,
+                }}>{shownError}</div>
+              )}
+
+              <div style={{ textAlign: 'center', marginTop: 20 }}>
+                {mode === 'signin' ? (
+                  <button onClick={() => switchMode('signup')} style={{ background: 'transparent', border: 'none', cursor: 'pointer', ...type.small, color: T.sub }}>
+                    New here? <span style={{ color: T.accent, fontWeight: 560 }}>Create an account</span>
+                  </button>
+                ) : (
+                  <button onClick={() => switchMode('signin')} style={{ background: 'transparent', border: 'none', cursor: 'pointer', ...type.small, color: T.sub }}>
+                    Already have an account? <span style={{ color: T.accent, fontWeight: 560 }}>Sign in</span>
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+/* ============================================================
  * ABOUT
  * ============================================================ */
 
-function AboutScreen({ apiStatus }) {
+function AboutScreen({ apiStatus, user, onSignOut }) {
   const statuses = [
     { key: 'football', name: 'Match data' },
     { key: 'odds', name: 'Betting prices' },
@@ -2162,6 +2343,30 @@ function AboutScreen({ apiStatus }) {
           </p>
         </div>
       </Reveal>
+
+      {user && (
+        <Reveal delay={0.04}>
+          <Card style={{ padding: 30, marginTop: 26 }}>
+            <Eyebrow>Your account</Eyebrow>
+            <div style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              gap: 14, marginTop: 14, flexWrap: 'wrap',
+            }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ ...type.small, fontSize: 14.5, fontWeight: 560, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {user.email}
+                </div>
+                <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 3 }}>
+                  Your follows, verdicts and theme sync to this account.
+                </div>
+              </div>
+              <Button kind="ghost" onClick={onSignOut} style={{ padding: '8px 20px', fontSize: 13.5 }}>
+                Sign out
+              </Button>
+            </div>
+          </Card>
+        </Reveal>
+      )}
 
       <Reveal delay={0.06}>
         <Card style={{ padding: 30, marginTop: 26 }}>
@@ -2295,14 +2500,38 @@ function DiagnosticPanel({ apiHealth, open, onToggle, onRetryFootball, onRetryOd
 }
 
 /* ============================================================
- * Root — all state logic preserved from the working prototype
+ * Root — auth gate wraps the app; MatchIQ's logic is preserved
  * ============================================================ */
 
-export default function MatchIQ() {
+export default function AuthRoot() {
+  const [theme] = useTheme()
+  const { user, loading, authError, setAuthError } = useAuth()
+
+  // Without Supabase keys the app runs un-gated, exactly as before.
+  if (!authConfigured) return <MatchIQ />
+
+  if (loading) {
+    return (
+      <div data-theme={theme} style={{ minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center' }}>
+        <GlobalStyles />
+        <ButtonSpinner color="var(--iq-accent)" />
+      </div>
+    )
+  }
+
+  if (!user) {
+    return <AuthScreen theme={theme} initialError={authError}
+      onClearInitialError={() => setAuthError(null)} />
+  }
+
+  return <MatchIQ user={user} />
+}
+
+function MatchIQ({ user }) {
   const width = useWindowWidth()
   const isMobile = width < 768
 
-  const [theme, toggleTheme] = useTheme()
+  const [theme, toggleTheme, setTheme] = useTheme()
 
   const [oddsCache, setOddsCache] = useState([])
   const [oddsUpdatedAt, setOddsUpdatedAt] = useState(null)
@@ -2368,6 +2597,25 @@ export default function MatchIQ() {
   }
 
   useEffect(() => { writeJSON(LS_TRACKED, Array.from(tracked)) }, [tracked])
+
+  /* -------- account sync — pull once on sign-in, then debounced push -------- */
+  const trackedArr = useMemo(() => Array.from(tracked), [tracked])
+  useUserData(user, { tracked: trackedArr, analysisCache, agentPerf, theme }, (row) => {
+    if (row.theme === 'light' || row.theme === 'dark') setTheme(row.theme)
+    if (Array.isArray(row.tracked) && row.tracked.length) {
+      setTracked(prev => new Set([...prev, ...row.tracked]))
+    }
+    if (row.analysis_cache && typeof row.analysis_cache === 'object') {
+      // Local entries win per fixture — they're at least as fresh as the remote copy.
+      setAnalysisCache(prev => ({ ...row.analysis_cache, ...prev }))
+    }
+    if (row.agent_perf && typeof row.agent_perf === 'object' && Object.keys(row.agent_perf).length) {
+      setAgentPerf(prev => {
+        const localTotal = Object.values(prev || {}).reduce((s, v) => s + (v?.total || 0), 0)
+        return localTotal > 0 ? prev : row.agent_perf
+      })
+    }
+  })
 
   useEffect(() => {
     const k = import.meta.env.VITE_GROQ_API_KEY || ''
@@ -2606,7 +2854,10 @@ export default function MatchIQ() {
       <RecordScreen fixtures={fixtures} analysisCache={analysisCache}
         agentPerf={agentPerf} onResolve={resolveManual} onOpen={openFixture} />
     )
-    if (activeTab === 'about') return <AboutScreen apiStatus={apiStatus} />
+    if (activeTab === 'about') return (
+      <AboutScreen apiStatus={apiStatus} user={user}
+        onSignOut={async () => { try { await signOut() } catch (e) { console.warn('sign out failed:', e.message) } }} />
+    )
     return null
   }
 
