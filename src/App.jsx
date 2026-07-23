@@ -59,14 +59,14 @@ const T = {
 }
 
 const LIGHT = {
-  bg:        '#FBFBFD',
+  bg:        '#F5F5F2',
   card:      '#FFFFFF',
   card2:     '#F5F5F7',
-  line:      'rgba(0,0,0,0.07)',
+  line:      'rgba(0,0,0,0.06)',
   lineHi:    'rgba(0,0,0,0.14)',
   ink:       '#1D1D1F',
   sub:       '#6E6E73',
-  faint:     '#98989D',
+  faint:     '#9A9A9E',
   accent:    '#0071E3',
   accentInk: '#FFFFFF',
   accentBg:  'rgba(0,113,227,0.08)',
@@ -159,15 +159,38 @@ function GlobalStyles() {
           border-color: rgba(255, 255, 255, 0.12) !important;
           box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
         }
+        [data-theme="light"] .iq-glass,
+        [data-theme="light"] .iq-bar {
+          background: linear-gradient(180deg,
+            rgba(255, 255, 255, 0.7),
+            rgba(255, 255, 255, 0.5)) !important;
+          backdrop-filter: blur(20px) saturate(150%) !important;
+          -webkit-backdrop-filter: blur(20px) saturate(150%) !important;
+          border-color: rgba(0, 0, 0, 0.06) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+        }
+        [data-theme="light"] .iq-elevated {
+          background: linear-gradient(180deg,
+            rgba(255, 255, 255, 0.85),
+            rgba(255, 255, 255, 0.65)) !important;
+          backdrop-filter: blur(30px) saturate(160%) !important;
+          -webkit-backdrop-filter: blur(30px) saturate(160%) !important;
+          border-color: rgba(0, 0, 0, 0.08) !important;
+          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+        }
       }
       /* No backdrop-filter: raise surface opacity so glass still reads as surface */
       @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
         [data-theme="dark"] {
-          --iq-card: rgba(255,255,255,0.12);
-          --iq-card2: rgba(255,255,255,0.14);
+          --iq-card: rgba(255,255,255,0.14);
+          --iq-card2: rgba(255,255,255,0.16);
         }
-        [data-theme="dark"] .iq-bar { background: rgba(255, 255, 255, 0.12) !important; }
-        [data-theme="dark"] .iq-elevated { background: rgba(255, 255, 255, 0.16) !important; }
+        [data-theme="dark"] .iq-glass,
+        [data-theme="dark"] .iq-bar { background: rgba(255, 255, 255, 0.14) !important; }
+        [data-theme="dark"] .iq-elevated { background: rgba(255, 255, 255, 0.18) !important; }
+        [data-theme="light"] .iq-glass,
+        [data-theme="light"] .iq-bar { background: rgba(255, 255, 255, 0.85) !important; }
+        [data-theme="light"] .iq-elevated { background: rgba(255, 255, 255, 0.92) !important; }
       }
 
       /* Accent glow on the verdict headline only (primary button gets it via --iq-glow) */
@@ -2466,7 +2489,7 @@ function Avatar({ user, size = 28 }) {
     )
   }
   return (
-    <span className="iq-glass" style={{
+    <span className="iq-elevated" style={{
       width: size, height: size, borderRadius: '50%',
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
       background: T.card2, border: `1px solid ${T.line}`,
@@ -2556,9 +2579,9 @@ function ProfileScreen({
           <div style={{ ...type.display, fontSize: isMobile ? 28 : 34, color: T.ink, marginTop: 20 }}>{displayName}</div>
           <div style={{ ...type.small, fontSize: 14, marginTop: 8 }}>{user?.email}</div>
           {memberSince && (
-            <span style={{
+            <span className="iq-glass" style={{
               display: 'inline-block', marginTop: 14, ...type.small, fontSize: 12, color: T.faint,
-              border: `1px solid ${T.line}`, borderRadius: 999, padding: '5px 14px',
+              background: T.card, border: `1px solid ${T.line}`, borderRadius: 999, padding: '5px 14px',
             }}>Member since {memberSince}</span>
           )}
         </div>
@@ -2586,7 +2609,7 @@ function ProfileScreen({
       <Reveal>
         <div style={{ marginTop: 40 }}>
           <Eyebrow style={{ marginBottom: 10 }}>Preferences</Eyebrow>
-          <Card style={{ padding: '6px 24px' }}>
+          <Card className="iq-elevated" style={{ padding: '6px 24px' }}>
             <div style={{ ...prefRow, borderBottom: `1px solid ${T.line}` }}>
               <span style={{ ...type.small, fontSize: 14.5, color: T.ink, fontWeight: 540 }}>Theme</span>
               <Segmented value={themeMode} onChange={onThemeMode} options={[
@@ -2864,7 +2887,10 @@ export default function AuthRoot() {
     return (
       <div data-theme={theme} style={{ minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center' }}>
         <GlobalStyles />
-        <ButtonSpinner color="var(--iq-accent)" />
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18 }}>
+          <Wordmark size={24} />
+          <ButtonSpinner color="var(--iq-accent)" />
+        </div>
       </div>
     )
   }

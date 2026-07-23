@@ -38,7 +38,12 @@ export function useAuth() {
       }
     }).catch(() => setLoading(false))
 
-    const { data: sub } = onAuthChange((_event, s) => {
+    const { data: sub } = onAuthChange((event, s) => {
+      // supabase-js fires INITIAL_SESSION (often with a null session) the moment
+      // we subscribe. Mid-OAuth-return that null is not authoritative — the token
+      // exchange is still in flight — so acting on it would bounce the user back
+      // to the sign-in screen. Hold until SIGNED_IN (or the failsafe) instead.
+      if (event === 'INITIAL_SESSION' && !s && returningFromOAuth) return
       setSession(s ?? null)
       if (s) {
         setAuthError(null)
