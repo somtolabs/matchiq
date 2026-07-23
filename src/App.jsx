@@ -637,7 +637,7 @@ function MatchRow({ fixture: f, analyzed, tracked, onOpen, onToggleTrack }) {
 
   const TeamLine = ({ name, logo, goals }) => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-      <Crest src={logo} name={name} size={22} />
+      <Crest src={logo} name={name} size={28} />
       <span style={{
         fontFamily: T.sans, fontSize: 14.5, fontWeight: 520, color: T.ink,
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1,
@@ -649,7 +649,7 @@ function MatchRow({ fixture: f, analyzed, tracked, onOpen, onToggleTrack }) {
   )
 
   return (
-    <div className="iq-row" role="button" tabIndex={0}
+    <div className={isLive ? 'iq-row iq-elevated' : 'iq-row'} role="button" tabIndex={0}
       aria-label={`${f.homeTeam} versus ${f.awayTeam}`}
       onClick={() => onOpen(f)}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(f) } }}
@@ -800,14 +800,20 @@ function MatchesScreen({
   const live = fixtures.filter(f => f.status === 'IN_PLAY' || f.status === 'LIVE')
   const isMobile = useWindowWidth() < 768
 
-  /* The single highest-conviction verdict already written, if any — real data only */
+  /* The single highest-conviction verdict already written, if any — real data
+   * only. Ranked by confidence, then value edge as the tie-breaker. */
   const topPick = useMemo(() => {
     let best = null
     for (const [id, a] of Object.entries(analysisCache)) {
       if (!a?.recommendation?.pick) continue
       const fx = fixtures.find(f => String(f.id) === String(id))
       if (!fx) continue
-      if (!best || (a.recommendation.confidence || 0) > (best.a.recommendation.confidence || 0)) best = { fx, a }
+      if (!best) { best = { fx, a }; continue }
+      const c = a.recommendation.confidence || 0
+      const bc = best.a.recommendation.confidence || 0
+      if (c > bc || (c === bc && (a.recommendation.value_edge || 0) > (best.a.recommendation.value_edge || 0))) {
+        best = { fx, a }
+      }
     }
     return best
   }, [analysisCache, fixtures])
@@ -841,6 +847,18 @@ function MatchesScreen({
     return Array.from(m.entries())
   }, [filtered])
 
+  /* The prominent group leads: the one holding today's top pick, else the largest */
+  const orderedGroups = useMemo(() => {
+    if (groups.length < 2) return groups
+    let lead = null
+    if (topPick) {
+      const g = groups.find(([, l]) => l.some(f => String(f.id) === String(topPick.fx.id)))
+      if (g) lead = g[0]
+    }
+    if (!lead) lead = [...groups].sort((a, b) => b[1].length - a[1].length)[0][0]
+    return [...groups].sort((a, b) => (a[0] === lead ? -1 : b[0] === lead ? 1 : 0))
+  }, [groups, topPick])
+
   if (fixturesLoading) return <MatchesSkeleton />
   if (fixturesError) {
     return (
@@ -852,47 +870,91 @@ function MatchesScreen({
     )
   }
 
-  const countWords = ['No', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve']
-  const headline = fixtures.length === 0
-    ? 'A quiet day.'
-    : `${countWords[fixtures.length] || fixtures.length} ${fixtures.length === 1 ? 'match' : 'matches'} today.`
-  const dateLine = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })
+  /* Hero copy — every word computed from real data, never a placeholder */
+  const headline = topPick
+    ? `${topPick.fx.homeTeam} vs ${topPick.fx.awayTeam} is today's sharpest read.`
+    : fixtures.length === 0
+      ? 'A quiet day — nothing on the slate.'
+      : `${fixtures.length} ${fixtures.length === 1 ? 'match' : 'matches'} today across ${compOptions.length} ${compOptions.length === 1 ? 'competition' : 'competitions'}.`
+  const dateLine = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
+  const topConf = topPick ? Math.round((topPick.a.recommendation.confidence || 0) * 100) : 0
+  const topEdge = topPick ? (topPick.a.recommendation.value_edge || 0) : 0
+  const highConviction = topPick && (topPick.a.recommendation.confidence || 0) >= 0.72
 
   return (
     <div>
-      <Reveal>
-        <div style={{
-          padding: isMobile ? '48px 0 8px' : '80px 0 16px',
+      {/* Hero — arrives once on load with a quiet rise, the Apple move */}
+      <motion.div
+        initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: 'easeOut' }}
+        style={{
+          padding: isMobile ? '56px 0 8px' : '96px 0 16px',
           display: 'flex', flexDirection: isMobile ? 'column' : 'row',
           alignItems: isMobile ? 'stretch' : 'flex-end',
-          justifyContent: 'space-between', gap: 28,
+          justifyContent: 'space-between', gap: 32,
         }}>
-          <div style={{ minWidth: 0 }}>
-            <h1 style={{ ...type.display, fontSize: isMobile ? 38 : 46, color: T.ink, margin: 0 }}>{headline}</h1>
-            <div style={{ ...type.body, fontSize: 17, color: T.sub, marginTop: 10 }}>
-              {dateLine}
-              {live.length > 0 && <> · <span style={{ color: T.live, fontWeight: 560 }}>{live.length} in play</span></>}
-            </div>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <h1 style={{ ...type.display, fontSize: isMobile ? 34 : 46, color: T.ink, margin: 0 }}>{headline}</h1>
+          <div style={{
+            ...type.body, fontSize: 17, color: T.sub, marginTop: 14,
+            display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+          }}>
+            {dateLine}
+            {live.length > 0 && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: T.live, fontWeight: 560 }}>
+                <PulseDot size={7} /> {live.length} {live.length === 1 ? 'match' : 'matches'} live now
+              </span>
+            )}
           </div>
-          {topPick && (
-            <Card className="iq-elevated iq-lift" onClick={() => onOpen(topPick.fx)} style={{
-              padding: 22, cursor: 'pointer', flexShrink: 0,
-              width: isMobile ? '100%' : 300,
-            }}>
-              <Eyebrow style={{ color: T.accent }}>Strongest read today</Eyebrow>
-              <div style={{ ...type.title, fontSize: 18, color: T.ink, marginTop: 10 }}>
+        </div>
+
+        {topPick ? (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.12, ease: 'easeOut' }}
+            style={{ flexShrink: 0, width: isMobile ? '100%' : 330 }}>
+            <Card onClick={() => onOpen(topPick.fx)}
+              className={`iq-elevated iq-lift${highConviction ? ' iq-halo' : ''}`}
+              style={{ padding: 32, cursor: 'pointer' }}>
+              <Eyebrow style={{ color: T.accent }}>Today's sharpest read</Eyebrow>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 16 }}>
+                <Crest src={topPick.fx.homeLogo} name={topPick.fx.homeTeam} size={26} />
+                <Crest src={topPick.fx.awayLogo} name={topPick.fx.awayTeam} size={26} />
+                <span style={{ ...type.small, fontSize: 13, color: T.faint, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {topPick.fx.homeTeam} v {topPick.fx.awayTeam}
+                </span>
+              </div>
+              <div style={{ ...type.title, fontSize: 21, color: T.ink, marginTop: 14 }}>
                 {pickHeadline(topPick.a.recommendation.pick, topPick.fx)}
               </div>
-              <div style={{ ...type.small, fontSize: 13, marginTop: 7 }}>
-                <strong style={{ color: T.ink, fontWeight: 560 }}>
-                  {Math.round((topPick.a.recommendation.confidence || 0) * 100)}% sure
-                </strong>
-                {topPickReason && <> — {topPickReason}</>}
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
+                <span style={{ ...type.display, fontSize: 36, color: T.ink, fontVariantNumeric: 'tabular-nums' }}>{topConf}%</span>
+                <span style={{ ...type.small, fontSize: 13 }}>sure</span>
+                {topEdge > 0 && (
+                  <span style={{
+                    fontSize: 12, fontWeight: 560, fontFamily: T.sans, color: T.good,
+                    background: T.goodBg, borderRadius: 999, padding: '4px 11px', whiteSpace: 'nowrap',
+                  }}>{topEdge}-pt edge</span>
+                )}
               </div>
+              {topPickReason && (
+                <div style={{
+                  ...type.small, fontSize: 13.5, marginTop: 12,
+                  display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                }}>{topPickReason}</div>
+              )}
             </Card>
-          )}
-        </div>
-      </Reveal>
+          </motion.div>
+        ) : fixtures.length > 0 && (
+          <div className="iq-glass" style={{
+            background: T.card, border: `1px solid ${T.line}`, borderRadius: 999,
+            padding: '11px 22px', ...type.small, fontSize: 13.5, whiteSpace: 'nowrap',
+            alignSelf: isMobile ? 'flex-start' : 'flex-end',
+          }}>
+            Run your first analysis to see it here
+          </div>
+        )}
+      </motion.div>
 
       <Reveal delay={0.04}>
         <div style={{ height: 1, background: T.line, margin: isMobile ? '28px 0 4px' : '40px 0 8px' }} />
@@ -951,15 +1013,18 @@ function MatchesScreen({
             </Card>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 44, marginTop: 28 }}>
-              {groups.map(([name, list]) => (
+              {orderedGroups.map(([name, list], idx) => (
                 <Reveal key={name}>
+                  {idx > 0 && <div style={{ height: 1, background: T.line, opacity: 0.6, marginBottom: 24 }} />}
                   <Card style={{ overflow: 'hidden' }}>
                     <div style={{
                       display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
                       padding: '18px 22px 12px',
                     }}>
-                      <span style={{ ...type.title, fontSize: 17, color: T.ink }}>{name}</span>
-                      <span style={{ ...type.small, color: T.faint }}>{list.length}</span>
+                      <span style={{ ...type.title, fontSize: idx === 0 ? 20 : 17, color: T.ink }}>{name}</span>
+                      <span style={{ ...type.small, color: T.faint }}>
+                        {idx === 0 ? `${list.length} ${list.length === 1 ? 'match' : 'matches'}` : list.length}
+                      </span>
                     </div>
                     {list.map(f => (
                       <MatchRow key={f.id} fixture={f}
