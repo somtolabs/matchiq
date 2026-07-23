@@ -290,8 +290,30 @@ function useTheme() {
   }, [])
   useEffect(() => { writeRaw(LS_THEME, mode) }, [mode])
   const theme = mode === 'system' ? (sysDark ? 'dark' : 'light') : mode
+  // Keep the <html> element (set pre-paint by the blocking script) and the
+  // dynamic theme-color meta in lockstep with the resolved theme, so a manual
+  // toggle also recolors the browser chrome and the overscroll/bounce area.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    document.documentElement.style.colorScheme = theme
+    updateThemeColorMeta(theme)
+  }, [theme])
   const toggle = () => setMode(theme === 'dark' ? 'light' : 'dark')
   return [theme, toggle, setMode, mode]
+}
+
+const THEME_BG = { dark: '#0B0B0D', light: '#F5F5F2' }
+
+/* The media-query theme-color tags only track the OS preference; this keeps a
+ * non-media tag in sync with an in-app override so the address-bar tint follows. */
+function updateThemeColorMeta(theme) {
+  let meta = document.querySelector('meta[name="theme-color"]:not([media])')
+  if (!meta) {
+    meta = document.createElement('meta')
+    meta.setAttribute('name', 'theme-color')
+    document.head.appendChild(meta)
+  }
+  meta.setAttribute('content', THEME_BG[theme] || THEME_BG.dark)
 }
 
 function useWindowWidth() {
