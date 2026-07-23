@@ -553,6 +553,9 @@ function Header({ theme, onToggleTheme, tab, onTab, isMobile, liveCount, user, o
       background: `color-mix(in oklab, ${T.bg} 82%, transparent)`,
       backdropFilter: 'saturate(1.6) blur(18px)', WebkitBackdropFilter: 'saturate(1.6) blur(18px)',
       borderBottom: `1px solid ${T.line}`,
+      // Extend the bar's surface up into the notch/status-bar area so the top
+      // edge blends with the phone rather than showing a seam above the header.
+      paddingTop: 'env(safe-area-inset-top, 0px)',
     }}>
       <div style={{
         maxWidth: 1024, margin: '0 auto', padding: isMobile ? '13px 20px' : '14px 28px',
@@ -2868,7 +2871,7 @@ function HowItWorksScreen({ onContinue, onBack, isMobile }) {
 /* Routes the signed-out experience. First-time visitors walk welcome → how →
  * sign up; anyone who has signed in before (LS_ONBOARD set) goes straight to
  * sign in. Screens hand off with a gentle 250ms fade-and-slide. */
-function OnboardingFlow({ theme, onToggleTheme, initialError, onClearInitialError }) {
+function OnboardingFlow({ theme, initialError, onClearInitialError }) {
   const isMobile = useWindowWidth() < 768
   const [stage, setStage] = useState(() =>
     (typeof window !== 'undefined' && window.localStorage.getItem(LS_ONBOARD) === 'true') ? 'signin' : 'welcome')
@@ -2876,24 +2879,17 @@ function OnboardingFlow({ theme, onToggleTheme, initialError, onClearInitialErro
   // Where the user is in the three-step introduction; null hides the dots
   const stepIndex = { welcome: 0, how: 1, signup: 2 }[stage] ?? null
 
+  // Onboarding follows the device's light/dark automatically — no manual toggle.
+  // The base background fills into the safe areas so the top and bottom edges
+  // blend seamlessly with the phone's status bar and home-indicator regions.
   return (
     <div data-theme={theme} style={{
       minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center',
-      padding: '48px 20px 72px', position: 'relative', zIndex: 1, overflow: 'hidden',
+      padding: 'calc(48px + env(safe-area-inset-top, 0px)) 20px calc(72px + env(safe-area-inset-bottom, 0px))',
+      position: 'relative', zIndex: 1, overflow: 'hidden',
     }}>
       <GlobalStyles />
       <OnboardingBackdrop stage={stage} />
-      {/* Theme toggle — same control the app header uses, quiet in the corner */}
-      <button onClick={onToggleTheme}
-        aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        style={{
-          position: 'absolute', top: 20, right: 20, zIndex: 2,
-          background: 'transparent', border: `1px solid ${T.line}`, borderRadius: '50%',
-          width: 36, height: 36, cursor: 'pointer', color: T.sub,
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        }}>
-        {theme === 'dark' ? <Sun size={16} strokeWidth={1.8} /> : <Moon size={16} strokeWidth={1.8} />}
-      </button>
       <AnimatePresence mode="wait">
         <motion.div key={stage}
           initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }}
@@ -3347,7 +3343,7 @@ function DiagnosticPanel({ apiHealth, open, onToggle, onRetryFootball, onRetryOd
  * ============================================================ */
 
 export default function AuthRoot() {
-  const [theme, toggleTheme] = useTheme()
+  const [theme] = useTheme()
   const { user, loading, authError, setAuthError, recovery, clearRecovery } = useAuth()
 
   // Once signed in (any method), onboarding never replays — sign-outs land on sign in.
@@ -3371,7 +3367,7 @@ export default function AuthRoot() {
   }
 
   if (!user) {
-    return <OnboardingFlow theme={theme} onToggleTheme={toggleTheme} initialError={authError}
+    return <OnboardingFlow theme={theme} initialError={authError}
       onClearInitialError={() => setAuthError(null)} />
   }
 
@@ -3726,7 +3722,7 @@ function MatchIQ({ user }) {
   const screenKey = selected ? `match-${selected.id}` : activeTab
 
   return (
-    <div data-theme={theme} style={{ minHeight: '100vh', position: 'relative', zIndex: 1 }}>
+    <div data-theme={theme} style={{ minHeight: '100dvh', position: 'relative', zIndex: 1 }}>
       <GlobalStyles />
       <Header theme={theme} onToggleTheme={toggleTheme}
         tab={activeTab} onTab={switchTab} isMobile={isMobile} liveCount={liveCount}
