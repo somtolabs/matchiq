@@ -465,6 +465,20 @@ function AnimatedScore({ value, style }) {
   )
 }
 
+/* TEMPORARY deployment-pipeline check — remove after the banners are confirmed
+ * visible on the live site. Deliberately loud; not part of the design system. */
+function BuildMarker() {
+  return (
+    <div style={{
+      background: '#E0201C', color: '#FFFFFF', textAlign: 'center',
+      padding: '12px 16px', borderRadius: 12, margin: '14px 0',
+      fontFamily: T.sans, fontWeight: 700, fontSize: 14, letterSpacing: '0.03em',
+    }}>
+      BUILD MARKER: 2026-07-23 11:40 UTC+01:00
+    </div>
+  )
+}
+
 /* Friendly language helpers — plain words first, numbers second */
 function confidencePhrase(conf) {
   const c = conf || 0
@@ -883,6 +897,7 @@ function MatchesScreen({
 
   return (
     <div>
+      <BuildMarker />
       {/* Hero — arrives once on load with a quiet rise, the Apple move */}
       <motion.div
         initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
@@ -2512,6 +2527,9 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
       padding: '32px 20px', position: 'relative', zIndex: 1, overflow: 'hidden',
     }}>
       <GlobalStyles />
+      <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 300, padding: '0 16px' }}>
+        <BuildMarker />
+      </div>
       <AnimatePresence mode="wait">
         <motion.div key={stage}
           initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}
@@ -2635,6 +2653,7 @@ function ProfileScreen({
 
   return (
     <div style={{ maxWidth: 620, margin: '0 auto' }}>
+      <BuildMarker />
       {/* Identity */}
       <Reveal>
         <div style={{ textAlign: 'center', padding: isMobile ? '40px 0' : '64px 0' }}>
