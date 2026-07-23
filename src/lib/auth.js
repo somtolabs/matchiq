@@ -3,7 +3,12 @@ import { supabase } from './supabase.js'
 export async function signUpWithEmail(email, password, name) {
   return supabase.auth.signUp({
     email, password,
-    ...(name ? { options: { data: { name } } } : {}),
+    options: {
+      // Confirmation emails must land back on this app, not the project's
+      // default Site URL (which points at localhost until configured).
+      emailRedirectTo: window.location.origin,
+      ...(name ? { data: { name } } : {}),
+    },
   })
 }
 
