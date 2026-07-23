@@ -67,7 +67,7 @@ export function friendlyAuthError(message = '') {
   const m = String(message).toLowerCase()
   if (m.includes('invalid login credentials')) return "That email and password don't match. Check them and try again."
   if (m.includes('already registered') || m.includes('already been registered')) return 'That email already has an account — try signing in instead.'
-  if (m.includes('password should be at least') || m.includes('at least 6')) return 'Passwords need at least 6 characters.'
+  if (m.includes('password should be at least') || m.includes('at least 6') || m.includes('weak password')) return 'Passwords need at least 8 characters and one number.'
   if (m.includes('valid email') || m.includes('invalid format')) return "That doesn't look like a valid email address."
   if (m.includes('email not confirmed')) return 'Your email hasn’t been confirmed yet — check your inbox for the confirmation link.'
   if (m.includes('rate limit') || m.includes('too many')) return 'Too many attempts in a row — give it a minute and try again.'

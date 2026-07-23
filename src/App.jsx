@@ -310,7 +310,7 @@ function useWindowWidth() {
 
 const CONTACT_EMAIL = 'agwunobisomtochukwu@gmail.com'
 const SOCIAL_LINKS = {
-  github:   'https://github.com/bright1122-os',
+  github:   'https://github.com/somtolabs',
   linkedin: 'https://www.linkedin.com/in/agwunobi-somtochukwu-a61870342',
   x:        'https://x.com/gramzfgs',
   email:    `mailto:${CONTACT_EMAIL}`,
@@ -2401,14 +2401,18 @@ function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearIniti
     if (!EMAIL_RE.test(email.trim())) {
       setError("That doesn't look like a valid email address."); return
     }
-    if (mode === 'signup' && password.length < 8) {
-      setError('Passwords need at least 8 characters.'); return
+    if (mode === 'signup' && (password.length < 8 || !/\d/.test(password))) {
+      setError('Passwords need at least 8 characters and one number.'); return
     }
     setBusy('email'); setError(null); setNotConfirmed(false); onClearInitialError?.()
     try {
       if (mode === 'signup') {
         const { data, error: err } = await signUpWithEmail(email.trim(), password, name.trim())
-        if (err) fail(friendlyAuthError(err.message))
+        // Never leak whether the email is already registered — an "already
+        // registered" error and a genuine new signup both resolve to the same
+        // neutral "check your email" screen, closing the enumeration channel.
+        if (err && /already|registered/i.test(err.message)) setCheckEmail(true)
+        else if (err) fail(friendlyAuthError(err.message))
         else if (!data?.session) setCheckEmail(true)
         // With a session, onAuthChange moves the user into the app.
       } else {
@@ -2842,7 +2846,7 @@ function HowItWorksScreen({ onContinue, onBack, isMobile }) {
 /* Routes the signed-out experience. First-time visitors walk welcome → how →
  * sign up; anyone who has signed in before (LS_ONBOARD set) goes straight to
  * sign in. Screens hand off with a gentle 250ms fade-and-slide. */
-function OnboardingFlow({ theme, initialError, onClearInitialError }) {
+function OnboardingFlow({ theme, onToggleTheme, initialError, onClearInitialError }) {
   const isMobile = useWindowWidth() < 768
   const [stage, setStage] = useState(() =>
     (typeof window !== 'undefined' && window.localStorage.getItem(LS_ONBOARD) === 'true') ? 'signin' : 'welcome')
@@ -2857,6 +2861,17 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
     }}>
       <GlobalStyles />
       <OnboardingBackdrop stage={stage} />
+      {/* Theme toggle — same control the app header uses, quiet in the corner */}
+      <button onClick={onToggleTheme}
+        aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        style={{
+          position: 'absolute', top: 20, right: 20, zIndex: 2,
+          background: 'transparent', border: `1px solid ${T.line}`, borderRadius: '50%',
+          width: 36, height: 36, cursor: 'pointer', color: T.sub,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+        {theme === 'dark' ? <Sun size={16} strokeWidth={1.8} /> : <Moon size={16} strokeWidth={1.8} />}
+      </button>
       <AnimatePresence mode="wait">
         <motion.div key={stage}
           initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }}
@@ -3310,7 +3325,7 @@ function DiagnosticPanel({ apiHealth, open, onToggle, onRetryFootball, onRetryOd
  * ============================================================ */
 
 export default function AuthRoot() {
-  const [theme] = useTheme()
+  const [theme, toggleTheme] = useTheme()
   const { user, loading, authError, setAuthError, recovery, clearRecovery } = useAuth()
 
   // Once signed in (any method), onboarding never replays — sign-outs land on sign in.
@@ -3334,7 +3349,7 @@ export default function AuthRoot() {
   }
 
   if (!user) {
-    return <OnboardingFlow theme={theme} initialError={authError}
+    return <OnboardingFlow theme={theme} onToggleTheme={toggleTheme} initialError={authError}
       onClearInitialError={() => setAuthError(null)} />
   }
 
