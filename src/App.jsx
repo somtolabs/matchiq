@@ -21,6 +21,7 @@ import { useFixtures } from './hooks/useFixtures.js'
 import { authConfigured } from './lib/supabase.js'
 import {
   signUpWithEmail, signInWithEmail, signInWithGoogle, signOut, friendlyAuthError,
+  resetPasswordForEmail, updatePassword,
 } from './lib/auth.js'
 import { useAuth } from './hooks/useAuth.js'
 import { useUserData } from './hooks/useUserData.js'
@@ -465,20 +466,6 @@ function AnimatedScore({ value, style }) {
   )
 }
 
-/* TEMPORARY deployment-pipeline check — remove after the banners are confirmed
- * visible on the live site. Deliberately loud; not part of the design system. */
-function BuildMarker() {
-  return (
-    <div style={{
-      background: '#E0201C', color: '#FFFFFF', textAlign: 'center',
-      padding: '12px 16px', borderRadius: 12, margin: '14px 0',
-      fontFamily: T.sans, fontWeight: 700, fontSize: 14, letterSpacing: '0.03em',
-    }}>
-      BUILD MARKER: 2026-07-23 11:40 UTC+01:00
-    </div>
-  )
-}
-
 /* Friendly language helpers — plain words first, numbers second */
 function confidencePhrase(conf) {
   const c = conf || 0
@@ -897,7 +884,6 @@ function MatchesScreen({
 
   return (
     <div>
-      <BuildMarker />
       {/* Hero — arrives once on load with a quiet rise, the Apple move */}
       <motion.div
         initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
@@ -2306,7 +2292,43 @@ function BackArrow({ onClick }) {
   )
 }
 
-function AuthScreen({ mode, onMode, onBack, initialError, onClearInitialError }) {
+/* Real-time password guidance — honest tiers, no theatrics */
+function passwordScore(pw) {
+  if (!pw) return 0
+  let s = 0
+  if (pw.length >= 8) s += 1
+  if (pw.length >= 12) s += 1
+  if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) s += 1
+  if (/\d/.test(pw) || /[^A-Za-z0-9]/.test(pw)) s += 1
+  if (pw.length < 8) s = Math.min(s, 1)
+  return Math.min(4, s)
+}
+
+function PasswordStrength({ password }) {
+  if (!password) return null
+  const score = passwordScore(password)
+  const [label, color] = [
+    ['Too short', T.faint], ['Weak', T.bad], ['Okay', T.sub], ['Good', T.good], ['Strong', T.good],
+  ][score]
+  return (
+    <div aria-live="polite" style={{ marginTop: -6 }}>
+      <div style={{ display: 'flex', gap: 5 }}>
+        {[1, 2, 3, 4].map(i => (
+          <span key={i} style={{
+            flex: 1, height: 4, borderRadius: 999,
+            background: i <= score ? color : T.card2,
+            transition: `background 250ms ${T.ease}`,
+          }} />
+        ))}
+      </div>
+      <div style={{ ...type.small, fontSize: 12, color, marginTop: 6 }}>
+        {label}{score < 3 && ' — 8+ characters with a mix of cases and numbers goes a long way'}
+      </div>
+    </div>
+  )
+}
+
+function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearInitialError }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -2379,6 +2401,9 @@ function AuthScreen({ mode, onMode, onBack, initialError, onClearInitialError })
                 We've sent a confirmation link to <strong style={{ color: T.ink, fontWeight: 560 }}>{email}</strong>.
                 Follow it and you'll land right back here, signed in.
               </div>
+              <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 12 }}>
+                Nothing arriving? Give it a minute, check your spam folder, or go back and try another address.
+              </div>
               <button onClick={() => switchMode('signin')} style={{
                 background: 'transparent', border: 'none', cursor: 'pointer',
                 ...type.small, color: T.accent, fontWeight: 560, marginTop: 18,
@@ -2413,6 +2438,13 @@ function AuthScreen({ mode, onMode, onBack, initialError, onClearInitialError })
                   autoComplete="email" disabled={busyAny} />
                 <AuthInput label="Password" type="password" value={password} onChange={setPassword}
                   autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} disabled={busyAny} />
+                {mode === 'signup' && <PasswordStrength password={password} />}
+                {mode === 'signin' && onForgot && (
+                  <button type="button" onClick={onForgot} style={{
+                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+                    alignSelf: 'flex-start', ...type.small, fontSize: 13, color: T.sub, marginTop: -4,
+                  }}>Forgot your password?</button>
+                )}
                 <Button kind="primary" disabled={busyAny}
                   style={{ width: '100%', padding: '13px 22px', fontSize: 15, marginTop: 4 }}
                   onClick={() => {}}>
@@ -2449,35 +2481,194 @@ function AuthScreen({ mode, onMode, onBack, initialError, onClearInitialError })
 }
 
 /* ============================================================
+ * PASSWORD RESET — request + email-link landing
+ * ============================================================ */
+
+function ForgotPasswordScreen({ onBack }) {
+  const [email, setEmail] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [sent, setSent] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function submit(e) {
+    e.preventDefault()
+    setBusy(true); setError(null)
+    try {
+      const { error: err } = await resetPasswordForEmail(email.trim())
+      if (err) setError(friendlyAuthError(err.message))
+      else setSent(true)
+    } catch (e2) {
+      setError(friendlyAuthError(e2.message))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div style={{ width: '100%', maxWidth: 400, margin: '0 auto' }}>
+      <BackArrow onClick={onBack} />
+      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 28 }}>
+        <Wordmark size={24} />
+      </div>
+      <h1 style={{ ...type.display, fontSize: 32, color: T.ink, textAlign: 'center', margin: '0 0 8px' }}>
+        Reset your password
+      </h1>
+      <div style={{ ...type.small, fontSize: 14.5, textAlign: 'center', marginBottom: 26 }}>
+        Tell us your email and we'll send you a link to set a new one.
+      </div>
+      <Card className="iq-elevated" style={{ padding: 28 }}>
+        {sent ? (
+          <div style={{ textAlign: 'center', padding: '18px 4px' }}>
+            <div style={{ ...type.title, fontSize: 19, color: T.ink }}>Check your email.</div>
+            <div style={{ ...type.small, marginTop: 10 }}>
+              We've sent a reset link to <strong style={{ color: T.ink, fontWeight: 560 }}>{email}</strong>.
+              Follow it and you'll be asked to choose a new password.
+            </div>
+            <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 12 }}>
+              Nothing arriving? Give it a minute or check your spam folder.
+            </div>
+            <button onClick={onBack} style={{
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              ...type.small, color: T.accent, fontWeight: 560, marginTop: 18,
+            }}>Back to sign in</button>
+          </div>
+        ) : (
+          <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <AuthInput label="Email" type="email" value={email} onChange={setEmail}
+              autoComplete="email" disabled={busy} />
+            <Button kind="primary" disabled={busy}
+              style={{ width: '100%', padding: '13px 22px', fontSize: 15, marginTop: 4 }}
+              onClick={() => {}}>
+              {busy ? <ButtonSpinner /> : 'Send reset link'}
+            </Button>
+            {error && (
+              <div role="alert" style={{
+                ...type.small, fontSize: 13.5, color: T.bad, background: T.badBg,
+                borderRadius: 12, padding: '11px 15px',
+              }}>{error}</div>
+            )}
+          </form>
+        )}
+      </Card>
+    </div>
+  )
+}
+
+/* Where the reset email's link lands: the user is in a recovery session and
+ * must choose a new password before entering the app. */
+function ResetPasswordScreen({ theme, onDone }) {
+  const [password, setPassword] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function submit(e) {
+    e.preventDefault()
+    if (passwordScore(password) < 2) {
+      setError('That password is a little thin — 8+ characters with a mix of cases and numbers keeps you safe.')
+      return
+    }
+    setBusy(true); setError(null)
+    try {
+      const { error: err } = await updatePassword(password)
+      if (err) setError(friendlyAuthError(err.message))
+      else onDone()
+    } catch (e2) {
+      setError(friendlyAuthError(e2.message))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div data-theme={theme} style={{
+      minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center',
+      padding: '32px 20px', position: 'relative', zIndex: 1,
+    }}>
+      <GlobalStyles />
+      <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, ease: 'easeOut' }}
+        style={{ width: '100%', maxWidth: 400 }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 28 }}>
+          <Wordmark size={24} />
+        </div>
+        <h1 style={{ ...type.display, fontSize: 32, color: T.ink, textAlign: 'center', margin: '0 0 8px' }}>
+          Set a new password
+        </h1>
+        <div style={{ ...type.small, fontSize: 14.5, textAlign: 'center', marginBottom: 26 }}>
+          Choose something strong — you'll use it from now on.
+        </div>
+        <Card className="iq-elevated" style={{ padding: 28 }}>
+          <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <AuthInput label="New password" type="password" value={password} onChange={setPassword}
+              autoComplete="new-password" disabled={busy} />
+            <PasswordStrength password={password} />
+            <Button kind="primary" disabled={busy}
+              style={{ width: '100%', padding: '13px 22px', fontSize: 15, marginTop: 4 }}
+              onClick={() => {}}>
+              {busy ? <ButtonSpinner /> : 'Save and continue'}
+            </Button>
+            {error && (
+              <div role="alert" style={{
+                ...type.small, fontSize: 13.5, color: T.bad, background: T.badBg,
+                borderRadius: 12, padding: '11px 15px',
+              }}>{error}</div>
+            )}
+          </form>
+        </Card>
+      </motion.div>
+    </div>
+  )
+}
+
+/* ============================================================
  * ONBOARDING — welcome → how it works → create account
  * ============================================================ */
 
 const LS_ONBOARD = 'matchiq_onboarding_seen'
 
+/* Staggered arrival for onboarding content — each block rises in turn */
+function Arrive({ children, order = 0, style }) {
+  return (
+    <motion.div style={style}
+      initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.45, delay: order * 0.09, ease: 'easeOut' }}>
+      {children}
+    </motion.div>
+  )
+}
+
 function WelcomeScreen({ onStart, onSignIn, isMobile }) {
   return (
-    <div style={{ textAlign: 'center', maxWidth: 440, margin: '0 auto' }}>
-      <div style={{ display: 'flex', justifyContent: 'center', color: T.ink, marginBottom: 36 }}>
-        <LogoMark size={40} />
-      </div>
-      <h1 style={{ ...type.display, fontSize: isMobile ? 36 : 44, color: T.ink, margin: 0 }}>
-        Predictions worth trusting
-      </h1>
-      <div style={{ ...type.body, fontSize: 17, color: T.sub, marginTop: 16 }}>
-        AI analysis that shows its reasoning, for football matches happening today.
-      </div>
-      <div style={{ marginTop: 40 }}>
-        <Button onClick={onStart} style={{
-          padding: '14px 30px', fontSize: 16,
-          width: isMobile ? '100%' : 260,
-        }}>Get started</Button>
-      </div>
-      <button onClick={onSignIn} style={{
-        background: 'transparent', border: 'none', cursor: 'pointer',
-        ...type.small, color: T.sub, marginTop: 22,
-      }}>
-        Already have an account? <span style={{ color: T.accent, fontWeight: 560 }}>Sign in</span>
-      </button>
+    <div style={{ textAlign: 'center', maxWidth: 460, margin: '0 auto' }}>
+      <Arrive order={0}>
+        <div style={{ display: 'flex', justifyContent: 'center', color: T.ink, marginBottom: 44 }}>
+          <LogoMark size={40} />
+        </div>
+      </Arrive>
+      <Arrive order={1}>
+        <h1 style={{ ...type.display, fontSize: isMobile ? 38 : 46, color: T.ink, margin: 0 }}>
+          Predictions worth trusting
+        </h1>
+      </Arrive>
+      <Arrive order={2}>
+        <div style={{ ...type.body, fontSize: 17.5, color: T.sub, marginTop: 20, maxWidth: 400, marginLeft: 'auto', marginRight: 'auto' }}>
+          AI analysis that shows its reasoning, for football matches happening today.
+        </div>
+      </Arrive>
+      <Arrive order={3}>
+        <div style={{ marginTop: 48 }}>
+          <Button onClick={onStart} style={{
+            padding: '15px 30px', fontSize: 16,
+            width: isMobile ? '100%' : 260,
+          }}>Get started</Button>
+        </div>
+        <button onClick={onSignIn} style={{
+          background: 'transparent', border: 'none', cursor: 'pointer',
+          ...type.small, color: T.sub, marginTop: 24,
+        }}>
+          Already have an account? <span style={{ color: T.accent, fontWeight: 560 }}>Sign in</span>
+        </button>
+      </Arrive>
     </div>
   )
 }
@@ -2495,20 +2686,30 @@ function HowItWorksScreen({ onContinue, onBack, isMobile }) {
   return (
     <div style={{ maxWidth: 460, margin: '0 auto' }}>
       <BackArrow onClick={onBack} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        {HOW_CARDS.map(([heading, body]) => (
-          <Card key={heading} style={{ padding: 28 }}>
-            <div style={{ ...type.title, fontSize: 18, color: T.ink }}>{heading}</div>
-            <div style={{ ...type.small, fontSize: 14.5, marginTop: 9 }}>{body}</div>
-          </Card>
+      <Arrive order={0}>
+        <Eyebrow style={{ textAlign: 'center', marginBottom: 8 }}>How this works</Eyebrow>
+        <h1 style={{ ...type.display, fontSize: isMobile ? 28 : 32, color: T.ink, textAlign: 'center', margin: '0 0 30px' }}>
+          Three angles, one verdict.
+        </h1>
+      </Arrive>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+        {HOW_CARDS.map(([heading, body], i) => (
+          <Arrive key={heading} order={i + 1}>
+            <Card style={{ padding: 30 }}>
+              <div style={{ ...type.title, fontSize: 18, color: T.ink }}>{heading}</div>
+              <div style={{ ...type.small, fontSize: 14.5, marginTop: 10 }}>{body}</div>
+            </Card>
+          </Arrive>
         ))}
       </div>
-      <div style={{ marginTop: 32, textAlign: 'center' }}>
-        <Button onClick={onContinue} style={{
-          padding: '14px 30px', fontSize: 16,
-          width: isMobile ? '100%' : 260,
-        }}>Continue</Button>
-      </div>
+      <Arrive order={4}>
+        <div style={{ marginTop: 36, textAlign: 'center' }}>
+          <Button onClick={onContinue} style={{
+            padding: '15px 30px', fontSize: 16,
+            width: isMobile ? '100%' : 260,
+          }}>Continue</Button>
+        </div>
+      </Arrive>
     </div>
   )
 }
@@ -2521,19 +2722,19 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
   const [stage, setStage] = useState(() =>
     (typeof window !== 'undefined' && window.localStorage.getItem(LS_ONBOARD) === 'true') ? 'signin' : 'welcome')
 
+  // Where the user is in the three-step introduction; null hides the dots
+  const stepIndex = { welcome: 0, how: 1, signup: 2 }[stage] ?? null
+
   return (
     <div data-theme={theme} style={{
       minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center',
-      padding: '32px 20px', position: 'relative', zIndex: 1, overflow: 'hidden',
+      padding: '48px 20px 72px', position: 'relative', zIndex: 1, overflow: 'hidden',
     }}>
       <GlobalStyles />
-      <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 300, padding: '0 16px' }}>
-        <BuildMarker />
-      </div>
       <AnimatePresence mode="wait">
         <motion.div key={stage}
-          initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}
-          transition={{ duration: 0.25, ease: 'easeOut' }}
+          initial={{ opacity: 0, x: 14 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -14 }}
+          transition={{ duration: 0.32, ease: 'easeOut' }}
           style={{ width: '100%' }}>
           {stage === 'welcome' && (
             <WelcomeScreen isMobile={isMobile}
@@ -2543,13 +2744,33 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
             <HowItWorksScreen isMobile={isMobile}
               onContinue={() => setStage('signup')} onBack={() => setStage('welcome')} />
           )}
+          {stage === 'reset' && (
+            <ForgotPasswordScreen onBack={() => setStage('signin')} />
+          )}
           {(stage === 'signin' || stage === 'signup') && (
             <AuthScreen mode={stage} onMode={setStage}
               onBack={stage === 'signup' ? () => setStage('how') : undefined}
+              onForgot={() => setStage('reset')}
               initialError={initialError} onClearInitialError={onClearInitialError} />
           )}
         </motion.div>
       </AnimatePresence>
+
+      {/* Quiet sense of progression through the three-step introduction */}
+      {stepIndex != null && (
+        <div style={{
+          position: 'absolute', bottom: 32, left: 0, right: 0,
+          display: 'flex', justifyContent: 'center', gap: 8,
+        }}>
+          {[0, 1, 2].map(i => (
+            <span key={i} style={{
+              width: i === stepIndex ? 22 : 6, height: 6, borderRadius: 999,
+              background: i === stepIndex ? T.accent : T.lineHi,
+              transition: `all 350ms ${T.ease}`,
+            }} />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -2642,9 +2863,13 @@ function ProfileScreen({
 
   const deleteHref = `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent('Delete my account')}&body=${encodeURIComponent(`Please delete my MatchIQ account associated with ${user?.email || ''}`)}`
 
-  const StatCard = ({ big, bigColor = T.ink, bigSize = 40, context }) => (
-    <Card style={{ padding: 26 }}>
-      <div style={{ ...type.display, fontSize: bigSize, color: bigColor, fontVariantNumeric: 'tabular-nums' }}>{big}</div>
+  const StatCard = ({ label, big, bigColor = T.ink, bigSize = 44, context }) => (
+    <Card style={{ padding: 28 }}>
+      <Eyebrow style={{ fontSize: 11 }}>{label}</Eyebrow>
+      <div style={{
+        ...type.display, fontSize: bigSize, color: bigColor,
+        fontVariantNumeric: 'tabular-nums', marginTop: 12, lineHeight: 1.05,
+      }}>{big}</div>
       <div style={{ ...type.small, fontSize: 13, marginTop: 8 }}>{context}</div>
     </Card>
   )
@@ -2653,14 +2878,15 @@ function ProfileScreen({
 
   return (
     <div style={{ maxWidth: 620, margin: '0 auto' }}>
-      <BuildMarker />
       {/* Identity */}
       <Reveal>
-        <div style={{ textAlign: 'center', padding: isMobile ? '40px 0' : '64px 0' }}>
+        <div style={{ textAlign: 'center', padding: isMobile ? '48px 0' : '72px 0 64px' }}>
           <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <Avatar user={user} size={isMobile ? 80 : 96} />
+            <span className="iq-halo" style={{ display: 'inline-flex', borderRadius: '50%' }}>
+              <Avatar user={user} size={isMobile ? 84 : 100} />
+            </span>
           </div>
-          <div style={{ ...type.display, fontSize: isMobile ? 28 : 34, color: T.ink, marginTop: 20 }}>{displayName}</div>
+          <div style={{ ...type.display, fontSize: isMobile ? 30 : 38, color: T.ink, marginTop: 24 }}>{displayName}</div>
           <div style={{ ...type.small, fontSize: 14, marginTop: 8 }}>{user?.email}</div>
           {memberSince && (
             <span className="iq-glass" style={{
@@ -2675,16 +2901,18 @@ function ProfileScreen({
       <Reveal>
         <Eyebrow style={{ marginBottom: 14 }}>Your record</Eyebrow>
         <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
-          <StatCard big={total} context={`across ${uniqueMatches} ${uniqueMatches === 1 ? 'match' : 'matches'}`} />
+          <StatCard label="Analyses run" big={total}
+            context={`across ${uniqueMatches} ${uniqueMatches === 1 ? 'match' : 'matches'}`} />
           {resolved.length < 5 ? (
-            <StatCard big="Building a record" bigSize={22} bigColor={T.ink}
+            <StatCard label="Accuracy" big="Building a record" bigSize={22} bigColor={T.ink}
               context={`${resolved.length} of 5 resolved`} />
           ) : (
-            <StatCard big={`${accuracy}%`} bigColor={accuracy >= 50 ? T.accent : T.sub}
+            <StatCard label="Accuracy" big={`${accuracy}%`} bigColor={accuracy >= 50 ? T.accent : T.sub}
               context={`${correct} correct out of ${resolved.length} resolved.`} />
           )}
-          <StatCard big={avgConf != null ? `${avgConf}%` : '—'} context="across your analyses." />
-          <StatCard big={bestStreak}
+          <StatCard label="Average confidence" big={avgConf != null ? `${avgConf}%` : '—'}
+            context="across your analyses." />
+          <StatCard label="Best streak" big={bestStreak}
             context={bestStreak > 0 ? 'consecutive correct calls.' : 'Track a match to start.'} />
         </div>
       </Reveal>
@@ -2957,7 +3185,7 @@ function DiagnosticPanel({ apiHealth, open, onToggle, onRetryFootball, onRetryOd
 
 export default function AuthRoot() {
   const [theme] = useTheme()
-  const { user, loading, authError, setAuthError } = useAuth()
+  const { user, loading, authError, setAuthError, recovery, clearRecovery } = useAuth()
 
   // Once signed in (any method), onboarding never replays — sign-outs land on sign in.
   useEffect(() => {
@@ -2983,6 +3211,9 @@ export default function AuthRoot() {
     return <OnboardingFlow theme={theme} initialError={authError}
       onClearInitialError={() => setAuthError(null)} />
   }
+
+  // Arrived via a password-reset email: set the new password before entering
+  if (recovery) return <ResetPasswordScreen theme={theme} onDone={clearRecovery} />
 
   return <MatchIQ user={user} />
 }

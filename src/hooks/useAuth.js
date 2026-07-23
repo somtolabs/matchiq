@@ -14,11 +14,15 @@ export function useAuth() {
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(authConfigured)
   const [authError, setAuthError] = useState(null)
+  // True while the user arrived via a password-recovery email link and hasn't
+  // set a new password yet — the app shows the reset screen instead of the main UI.
+  const [recovery, setRecovery] = useState(false)
 
   useEffect(() => {
     if (!authConfigured) return
 
     const hash = window.location.hash || ''
+    if (hash.includes('type=recovery')) setRecovery(true)
 
     if (hash.includes('error=')) {
       const params = new URLSearchParams(hash.slice(1))
@@ -44,6 +48,7 @@ export function useAuth() {
       // exchange is still in flight — so acting on it would bounce the user back
       // to the sign-in screen. Hold until SIGNED_IN (or the failsafe) instead.
       if (event === 'INITIAL_SESSION' && !s && returningFromOAuth) return
+      if (event === 'PASSWORD_RECOVERY') setRecovery(true)
       setSession(s ?? null)
       if (s) {
         setAuthError(null)
@@ -61,5 +66,8 @@ export function useAuth() {
     }
   }, [])
 
-  return { session, user: session?.user ?? null, loading, authError, setAuthError }
+  return {
+    session, user: session?.user ?? null, loading, authError, setAuthError,
+    recovery, clearRecovery: () => setRecovery(false),
+  }
 }
