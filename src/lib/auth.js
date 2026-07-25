@@ -96,6 +96,15 @@ export function friendlyAuthError(message = '') {
   if (m.includes('valid email') || m.includes('invalid format')) return "That doesn't look like a valid email address."
   if (m.includes('email not confirmed')) return 'Your email hasn’t been confirmed yet — check your inbox for the confirmation link.'
   if (m.includes('rate limit') || m.includes('too many')) return 'Too many attempts in a row — give it a minute and try again.'
+  // A failed SMTP/confirmation send comes back as a 500 "error sending
+  // confirmation email" (or a bare unexpected_failure). Name it plainly so it
+  // reads as a delivery problem, not a credentials problem.
+  if (m.includes('sending confirmation') || m.includes('sending email') || m.includes('sending recovery') || m.includes('unexpected_failure')) {
+    return 'We couldn’t send the email right now — the mail service is having trouble. Please try again in a few minutes.'
+  }
+  if (m.includes('email logins are disabled') || m.includes('signups not allowed') || m.includes('signup is disabled')) {
+    return 'Email sign-in isn’t available right now. Try continuing with Google instead.'
+  }
   if (m.includes('network') || m.includes('fetch')) return 'We couldn’t reach the sign-in service. Check your connection and try again.'
   return 'Something went wrong signing you in. Please try again.'
 }
