@@ -22,13 +22,16 @@ export async function signUpWithEmail(email, password, name) {
   const res = await supabase.auth.signUp({
     email, password,
     options: {
-      // Confirmation emails must land back on this app, not the project's
-      // default Site URL (which points at localhost until configured).
+      // Kept for correctness even with confirmation disabled: if the provider is
+      // ever set to confirm again, links return to this app, not localhost.
       emailRedirectTo: window.location.origin,
       ...(name ? { data: { name } } : {}),
     },
   })
-  logEmailDelivery('signup', res.error)
+  // Surface the FULL raw error, not just the message — status/code included.
+  // This is what pins down opaque sign-up failures (e.g. a disabled provider
+  // returns email_provider_disabled/400) without guessing.
+  if (res.error) console.warn('[auth:signup] raw error:', res.error)
   return res
 }
 
@@ -73,12 +76,6 @@ export async function signOut() {
   return res
 }
 
-export async function resendConfirmation(email) {
-  const res = await supabase.auth.resend({ type: 'signup', email })
-  logEmailDelivery('resend', res.error)
-  return res
-}
-
 export async function getSession() {
   return supabase.auth.getSession()
 }
@@ -102,8 +99,13 @@ export function friendlyAuthError(message = '') {
   if (m.includes('sending confirmation') || m.includes('sending email') || m.includes('sending recovery') || m.includes('unexpected_failure')) {
     return 'We couldn’t send the email right now — the mail service is having trouble. Please try again in a few minutes.'
   }
-  if (m.includes('email logins are disabled') || m.includes('signups not allowed') || m.includes('signup is disabled')) {
-    return 'Email sign-in isn’t available right now. Try continuing with Google instead.'
+  // Supabase returns "Email signups are disabled" / "Email logins are disabled"
+  // (error_code email_provider_disabled) when the Email provider is turned off
+  // in the dashboard. This was the real cause of the generic "something went
+  // wrong" — map it to an honest message pointing at the working method.
+  if (m.includes('signups are disabled') || m.includes('logins are disabled') ||
+      m.includes('provider is disabled') || m.includes('signups not allowed')) {
+    return 'Email sign-in isn’t available right now — please continue with Google.'
   }
   if (m.includes('network') || m.includes('fetch')) return 'We couldn’t reach the sign-in service. Check your connection and try again.'
   return 'Something went wrong signing you in. Please try again.'

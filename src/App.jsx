@@ -21,7 +21,7 @@ import { useFixtures } from './hooks/useFixtures.js'
 import { authConfigured } from './lib/supabase.js'
 import {
   signUpWithEmail, signInWithEmail, signInWithGoogle, signOut, friendlyAuthError,
-  resetPasswordForEmail, updatePassword, resendConfirmation,
+  resetPasswordForEmail, updatePassword,
 } from './lib/auth.js'
 import { useAuth } from './hooks/useAuth.js'
 import { useUserData } from './hooks/useUserData.js'
@@ -2395,22 +2395,19 @@ function PasswordStrength({ password }) {
   )
 }
 
-function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearInitialError }) {
+function AuthScreen({ mode, onMode, onBack, initialError, onClearInitialError }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(null) // null | 'google' | 'email'
   const [error, setError] = useState(null)
-  const [checkEmail, setCheckEmail] = useState(false)
-  const [notConfirmed, setNotConfirmed] = useState(false)
-  const [resent, setResent] = useState(false)
   const googleTimer = useRef(null)
   useEffect(() => () => clearTimeout(googleTimer.current), [])
 
   const shownError = error || initialError
 
   function switchMode(m) {
-    onMode(m); setError(null); setCheckEmail(false); setNotConfirmed(false); setResent(false)
+    onMode(m); setError(null)
     onClearInitialError?.()
   }
 
@@ -2452,34 +2449,25 @@ function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearIniti
     if (mode === 'signup' && (password.length < 8 || !/\d/.test(password))) {
       setError('Passwords need at least 8 characters and one number.'); return
     }
-    setBusy('email'); setError(null); setNotConfirmed(false); onClearInitialError?.()
+    setBusy('email'); setError(null); onClearInitialError?.()
     try {
       if (mode === 'signup') {
+        // Confirmation is disabled, so a successful sign-up returns a live
+        // session immediately and onAuthChange moves the user into the app —
+        // there is no "check your email" step. An already-registered email now
+        // returns a real error, which we surface honestly (sign in instead).
         const { data, error: err } = await signUpWithEmail(email.trim(), password, name.trim())
-        // Never leak whether the email is already registered — an "already
-        // registered" error and a genuine new signup both resolve to the same
-        // neutral "check your email" screen, closing the enumeration channel.
-        if (err && /already|registered/i.test(err.message)) setCheckEmail(true)
-        else if (err) fail(friendlyAuthError(err.message))
-        else if (!data?.session) setCheckEmail(true)
-        // With a session, onAuthChange moves the user into the app.
+        if (err) fail(friendlyAuthError(err.message))
+        else if (!data?.session) fail('We couldn’t start your session. Please try signing in.')
       } else {
         const { error: err } = await signInWithEmail(email.trim(), password)
-        if (err) {
-          if (/not confirmed/i.test(err.message)) setNotConfirmed(true)
-          fail(friendlyAuthError(err.message))
-        }
+        if (err) fail(friendlyAuthError(err.message))
       }
     } catch (e2) {
       fail(friendlyAuthError(e2.message))
     } finally {
       setBusy(null)
     }
-  }
-
-  async function handleResend() {
-    setResent(true)
-    try { await resendConfirmation(email.trim()) } catch { /* same calm message either way */ }
   }
 
   const busyAny = busy != null
@@ -2502,36 +2490,7 @@ function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearIniti
         {mode === 'signin' && <div style={{ marginBottom: 18 }} />}
 
         <Card className="iq-elevated" style={{ padding: 28 }}>
-          {checkEmail ? (
-            <div style={{ textAlign: 'center', padding: '18px 4px' }}>
-              <div style={{ ...type.title, fontSize: 19, color: T.ink }}>Check your email.</div>
-              <div style={{ ...type.small, marginTop: 10 }}>
-                We've sent a confirmation link to <strong style={{ color: T.ink, fontWeight: 560 }}>{email}</strong>.
-                Follow it and you'll land right back here, signed in.
-              </div>
-              <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 12 }}>
-                Nothing arriving? Give it a minute, check your spam folder, or go back and try another address.
-              </div>
-              <div style={{ ...type.small, fontSize: 13, marginTop: 16 }}>
-                {resent ? (
-                  <span style={{ color: T.ink }}>Confirmation email sent — check your inbox.</span>
-                ) : (
-                  <button onClick={handleResend} style={{
-                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
-                    fontFamily: T.sans, fontSize: 13, color: T.accent, fontWeight: 560,
-                  }}>Resend the confirmation email</button>
-                )}
-              </div>
-              <div style={{ ...type.small, fontSize: 13, marginTop: 14 }}>
-                Already have an account?{' '}
-                <button onClick={() => switchMode('signin')} style={{
-                  background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
-                  fontFamily: T.sans, fontSize: 13, color: T.accent, fontWeight: 560,
-                }}>Sign in instead</button>
-              </div>
-            </div>
-          ) : (
-            <>
+          <>
               <button onClick={handleGoogle} disabled={busyAny} className="iq-lift" style={{
                 width: '100%', background: T.card2, color: T.ink,
                 border: `1px solid ${T.lineHi}`, borderRadius: 999, padding: '13px 22px',
@@ -2560,12 +2519,6 @@ function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearIniti
                 <AuthInput label="Password" type="password" value={password} onChange={setPassword}
                   autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} disabled={busyAny} />
                 {mode === 'signup' && <PasswordStrength password={password} />}
-                {mode === 'signin' && onForgot && (
-                  <button type="button" onClick={onForgot} style={{
-                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
-                    alignSelf: 'flex-start', ...type.small, fontSize: 13, color: T.sub, marginTop: -4,
-                  }}>Forgot your password?</button>
-                )}
                 <Button kind="primary" disabled={busyAny}
                   style={{ width: '100%', padding: '13px 22px', fontSize: 15, marginTop: 4 }}
                   onClick={() => {}}>
@@ -2581,18 +2534,6 @@ function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearIniti
                   borderRadius: 12, padding: '11px 15px', marginTop: 16,
                 }}>
                   {shownError}
-                  {notConfirmed && (
-                    <div style={{ marginTop: 8 }}>
-                      {resent ? (
-                        <span style={{ color: T.ink }}>Confirmation email sent — check your inbox.</span>
-                      ) : (
-                        <button onClick={handleResend} style={{
-                          background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
-                          fontFamily: T.sans, fontSize: 13, color: T.accent, fontWeight: 560,
-                        }}>Resend the confirmation email</button>
-                      )}
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -2608,7 +2549,6 @@ function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearIniti
                 )}
               </div>
             </>
-          )}
         </Card>
       </div>
     </div>
@@ -2936,13 +2876,9 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
             <HowItWorksScreen isMobile={isMobile}
               onContinue={() => setStage('signup')} onBack={() => setStage('welcome')} />
           )}
-          {stage === 'reset' && (
-            <ForgotPasswordScreen onBack={() => setStage('signin')} />
-          )}
           {(stage === 'signin' || stage === 'signup') && (
             <AuthScreen mode={stage} onMode={setStage}
               onBack={stage === 'signup' ? () => setStage('how') : undefined}
-              onForgot={() => setStage('reset')}
               initialError={initialError} onClearInitialError={onClearInitialError} />
           )}
         </motion.div>
