@@ -63,14 +63,14 @@ const T = {
 }
 
 const LIGHT = {
-  bg:        '#F5F5F2',
+  bg:        '#FAFAFA',
   card:      '#FFFFFF',
-  card2:     '#F5F5F7',
+  card2:     '#F5F5F5',
   line:      'rgba(0,0,0,0.06)',
   lineHi:    'rgba(0,0,0,0.14)',
-  ink:       '#1D1D1F',
-  sub:       '#6E6E73',
-  faint:     '#9A9A9E',
+  ink:       '#1A1A1A',
+  sub:       '#6E6E6E',
+  faint:     '#A0A0A0',
   accent:    '#0071E3',
   accentInk: '#FFFFFF',
   accentBg:  'rgba(0,113,227,0.08)',
@@ -88,14 +88,14 @@ const LIGHT = {
  * from hairlines, depth from luminance — no dark drop shadows. The @supports-not
  * block in GlobalStyles raises surface opacity where backdrop-filter is missing. */
 const DARK = {
-  bg:        '#0B0B0D',
+  bg:        '#0A0A0A',
   card:      'rgba(255,255,255,0.04)',
   card2:     'rgba(255,255,255,0.06)',
   line:      'rgba(255,255,255,0.08)',
   lineHi:    'rgba(255,255,255,0.12)',
-  ink:       '#F5F5F7',
-  sub:       '#A1A1A6',
-  faint:     '#6E6E73',
+  ink:       '#F5F5F5',
+  sub:       '#A0A0A0',
+  faint:     '#6E6E6E',
   accent:    '#2997FF',
   accentInk: '#00080F',
   accentBg:  'rgba(41,151,255,0.13)',
@@ -134,55 +134,114 @@ function GlobalStyles() {
          Calm and chromatically silent; richness comes from the surfaces above. */
       [data-theme="dark"] {
         background:
-          radial-gradient(ellipse 100% 50% at 50% 0%,
-            rgba(255, 255, 255, 0.04),
+          radial-gradient(ellipse 100% 40% at 50% 0%,
+            rgba(255, 255, 255, 0.03),
             transparent 70%),
-          #0B0B0D;
+          #0A0A0A;
         background-attachment: fixed;
       }
 
       /* Glass surfaces — dark mode only, where backdrop-filter exists.
          Tuned for a neutral base; the inset top hairline is the light-catching edge. */
       @supports ((backdrop-filter: blur(8px)) or (-webkit-backdrop-filter: blur(8px))) {
+        /* Directional specular highlight: a soft glint concentrated in the
+           upper-left corner (radial-gradient at 15% 0%) layered over the fill,
+           plus a two-axis inset edge — closer to light catching a curved glass
+           surface than a flat line across the whole top edge. */
         [data-theme="dark"] .iq-glass,
         [data-theme="dark"] .iq-bar {
-          background: linear-gradient(180deg,
-            rgba(255, 255, 255, 0.05),
-            rgba(255, 255, 255, 0.03)) !important;
+          background-color: transparent !important;
+          background-image:
+            radial-gradient(circle at 15% 0%,
+              rgba(255, 255, 255, 0.06), transparent 40%),
+            linear-gradient(180deg,
+              rgba(255, 255, 255, 0.05),
+              rgba(255, 255, 255, 0.03)) !important;
           backdrop-filter: blur(20px) saturate(120%) !important;
           -webkit-backdrop-filter: blur(20px) saturate(120%) !important;
           border-color: rgba(255, 255, 255, 0.09) !important;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.08),
+            inset 1px 1px 0 rgba(255, 255, 255, 0.05) !important;
         }
         [data-theme="dark"] .iq-elevated {
-          background: linear-gradient(180deg,
-            rgba(255, 255, 255, 0.07),
-            rgba(255, 255, 255, 0.04)) !important;
+          background-color: transparent !important;
+          background-image:
+            radial-gradient(circle at 15% 0%,
+              rgba(255, 255, 255, 0.09), transparent 42%),
+            linear-gradient(180deg,
+              rgba(255, 255, 255, 0.07),
+              rgba(255, 255, 255, 0.04)) !important;
           backdrop-filter: blur(30px) saturate(140%) !important;
           -webkit-backdrop-filter: blur(30px) saturate(140%) !important;
           border-color: rgba(255, 255, 255, 0.12) !important;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.11),
+            inset 1px 1px 0 rgba(255, 255, 255, 0.07) !important;
         }
         [data-theme="light"] .iq-glass,
         [data-theme="light"] .iq-bar {
-          background: linear-gradient(180deg,
-            rgba(255, 255, 255, 0.7),
-            rgba(255, 255, 255, 0.5)) !important;
+          background-color: transparent !important;
+          background-image:
+            radial-gradient(circle at 15% 0%,
+              rgba(255, 255, 255, 0.9), transparent 40%),
+            linear-gradient(180deg,
+              rgba(255, 255, 255, 0.7),
+              rgba(255, 255, 255, 0.5)) !important;
           backdrop-filter: blur(20px) saturate(150%) !important;
           -webkit-backdrop-filter: blur(20px) saturate(150%) !important;
           border-color: rgba(0, 0, 0, 0.06) !important;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.8),
+            inset 1px 1px 0 rgba(255, 255, 255, 0.6) !important;
         }
         [data-theme="light"] .iq-elevated {
-          background: linear-gradient(180deg,
-            rgba(255, 255, 255, 0.85),
-            rgba(255, 255, 255, 0.65)) !important;
+          background-color: transparent !important;
+          background-image:
+            radial-gradient(circle at 15% 0%,
+              rgba(255, 255, 255, 0.95), transparent 42%),
+            linear-gradient(180deg,
+              rgba(255, 255, 255, 0.85),
+              rgba(255, 255, 255, 0.65)) !important;
           backdrop-filter: blur(30px) saturate(160%) !important;
           -webkit-backdrop-filter: blur(30px) saturate(160%) !important;
           border-color: rgba(0, 0, 0, 0.08) !important;
-          box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255, 255, 255, 0.9),
+            inset 1px 1px 0 rgba(255, 255, 255, 0.7) !important;
+        }
+
+        /* Floating nav — scrolled state: stronger blur + slightly more opaque
+           fill so the bar reads as a distinct layer above the moving content. */
+        [data-theme="dark"] .iq-bar.iq-bar-scrolled {
+          backdrop-filter: blur(28px) saturate(140%) !important;
+          -webkit-backdrop-filter: blur(28px) saturate(140%) !important;
+          background-image:
+            radial-gradient(circle at 15% 0%,
+              rgba(255, 255, 255, 0.06), transparent 40%),
+            linear-gradient(180deg,
+              rgba(255, 255, 255, 0.07),
+              rgba(255, 255, 255, 0.05)) !important;
+        }
+        [data-theme="light"] .iq-bar.iq-bar-scrolled {
+          backdrop-filter: blur(28px) saturate(160%) !important;
+          -webkit-backdrop-filter: blur(28px) saturate(160%) !important;
+          background-image:
+            radial-gradient(circle at 15% 0%,
+              rgba(255, 255, 255, 0.95), transparent 40%),
+            linear-gradient(180deg,
+              rgba(255, 255, 255, 0.9),
+              rgba(255, 255, 255, 0.75)) !important;
         }
       }
+      /* The floating shadow beneath (or above) a scrolled bar — points away
+         from the content it hovers over. Kept out of @supports so it applies
+         regardless of backdrop-filter availability. */
+      .iq-bar { transition: backdrop-filter 180ms ${T.ease}, box-shadow 180ms ${T.ease}; }
+      .iq-bar-top.iq-bar-scrolled { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15); }
+      .iq-bar-bottom.iq-bar-scrolled { box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15); }
+      [data-theme="light"] .iq-bar-top.iq-bar-scrolled { box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06); }
+      [data-theme="light"] .iq-bar-bottom.iq-bar-scrolled { box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.06); }
       /* No backdrop-filter: raise surface opacity so glass still reads as surface */
       @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
         [data-theme="dark"] {
@@ -305,7 +364,7 @@ function useTheme() {
   return [theme, toggle, setMode, mode]
 }
 
-const THEME_BG = { dark: '#0B0B0D', light: '#F5F5F2' }
+const THEME_BG = { dark: '#0A0A0A', light: '#FAFAFA' }
 
 /* The media-query theme-color tags only track the OS preference; this keeps a
  * non-media tag in sync with an in-app override so the address-bar tint follows. */
@@ -327,6 +386,20 @@ function useWindowWidth() {
     return () => window.removeEventListener('resize', on)
   }, [])
   return w
+}
+
+/* True once the page has scrolled past `threshold`px. Drives the floating-nav
+ * glass intensification — a clean threshold toggle whose visual transition is
+ * smoothed by the elements' own CSS transitions (blur/opacity/shadow). */
+function useScrolled(threshold = 10) {
+  const [scrolled, setScrolled] = useState(false)
+  useEffect(() => {
+    const on = () => setScrolled(window.scrollY > threshold)
+    on()
+    window.addEventListener('scroll', on, { passive: true })
+    return () => window.removeEventListener('scroll', on)
+  }, [threshold])
+  return scrolled
 }
 
 /* ============================================================
@@ -550,8 +623,12 @@ function Wordmark({ size = 22, withMark = true }) {
 
 function Header({ theme, onToggleTheme, tab, onTab, isMobile, liveCount, user, avatarChoice, onOpenProfile }) {
   const dateStr = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
+  // Floating-nav behaviour: at the top of scroll the bar sits flush with the
+  // standard glass; once scrolling begins it intensifies (stronger blur/opacity)
+  // and lifts onto a soft shadow so it reads as floating above the content.
+  const scrolled = useScrolled(10)
   return (
-    <header className="iq-bar" style={{
+    <header className={`iq-bar iq-bar-top${scrolled ? ' iq-bar-scrolled' : ''}`} style={{
       position: 'sticky', top: 0, zIndex: 100,
       background: `color-mix(in oklab, ${T.bg} 82%, transparent)`,
       backdropFilter: 'saturate(1.6) blur(18px)', WebkitBackdropFilter: 'saturate(1.6) blur(18px)',
@@ -621,8 +698,10 @@ function Header({ theme, onToggleTheme, tab, onTab, isMobile, liveCount, user, a
 }
 
 function MobileNav({ tab, onTab }) {
+  // Mirror the header's floating-nav behaviour on the bottom bar.
+  const scrolled = useScrolled(10)
   return (
-    <nav className="iq-bar" style={{
+    <nav className={`iq-bar iq-bar-bottom${scrolled ? ' iq-bar-scrolled' : ''}`} style={{
       position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 100,
       background: `color-mix(in oklab, ${T.card} 88%, transparent)`,
       backdropFilter: 'saturate(1.6) blur(20px)', WebkitBackdropFilter: 'saturate(1.6) blur(20px)',
@@ -938,9 +1017,7 @@ function MatchesScreen({
         </div>
 
         {topPick ? (
-          <motion.div
-            initial={{ opacity: 0, y: 16 }} animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, delay: 0.12, ease: 'easeOut' }}
+          <Materialize delay={0.12}
             style={{ flexShrink: 0, width: isMobile ? '100%' : 330 }}>
             <Card onClick={() => onOpen(topPick.fx)}
               className={`iq-elevated iq-lift${highConviction ? ' iq-halo' : ''}`}
@@ -973,7 +1050,7 @@ function MatchesScreen({
                 }}>{topPickReason}</div>
               )}
             </Card>
-          </motion.div>
+          </Materialize>
         ) : fixtures.length > 0 && (
           <div className="iq-glass" style={{
             background: T.card, border: `1px solid ${T.line}`, borderRadius: 999,
@@ -2634,7 +2711,7 @@ function ResetPasswordScreen({ theme, onDone }) {
 
 const LS_ONBOARD = 'matchiq_onboarding_seen'
 
-/* Abstract backdrop for the signed-out screens — large soft accent-tinted
+/* Abstract backdrop for the signed-out screens — large soft neutral-white
  * forms, slowly breathing, arranged differently per step so each screen has
  * its own character. Crossfades with the step change so the whole screen
  * moves as one. Pure gradient light: no photography, no extra colors. */
@@ -2647,7 +2724,7 @@ const BACKDROP_SCENES = {
     { left: '10%', top: '16%', size: 480, tint: 12, dur: 12 },
     { left: '90%', top: '70%', size: 520, tint: 10, dur: 15 },
   ],
-  signup: [
+  auth: [
     { left: '18%', top: '85%', size: 560, tint: 12, dur: 13 },
     { left: '85%', top: '8%', size: 380, tint: 8, dur: 11 },
   ],
@@ -2661,7 +2738,7 @@ const BACKDROP_SCENES = {
 
 function OnboardingBackdrop({ stage }) {
   const reduce = useReducedMotion()
-  const scene = BACKDROP_SCENES[stage] || BACKDROP_SCENES.signin
+  const scene = BACKDROP_SCENES[stage] || BACKDROP_SCENES.welcome
   return (
     <div aria-hidden="true" style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
       <AnimatePresence>
@@ -2677,12 +2754,31 @@ function OnboardingBackdrop({ stage }) {
                 position: 'absolute', left: b.left, top: b.top,
                 width: b.size, height: b.size, marginLeft: -b.size / 2, marginTop: -b.size / 2,
                 borderRadius: '50%',
-                background: `radial-gradient(circle, color-mix(in oklab, ${T.accent} ${b.tint}%, transparent), transparent 70%)`,
+                // Neutral ambient glow — white, not accent-tinted, so the
+                // signed-out backdrop carries no colour of its own.
+                background: `radial-gradient(circle, color-mix(in oklab, #FFFFFF ${b.tint}%, transparent), transparent 70%)`,
               }} />
           ))}
         </motion.div>
       </AnimatePresence>
     </div>
+  )
+}
+
+/* Liquid-Glass materialization entrance — the surface condenses into place:
+ * blur sharpens in alongside a fade and a slight scale, rather than a flat
+ * fade. Reserved for genuine entrances of significant glass surfaces (modals,
+ * the verdict card, onboarding step cards), never routine state changes.
+ * Respects reduced-motion by falling back to a plain fade. */
+function Materialize({ children, delay = 0, style, className, onClick }) {
+  const reduce = useReducedMotion()
+  return (
+    <motion.div style={style} className={className} onClick={onClick}
+      initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, filter: 'blur(8px)' }}
+      animate={reduce ? { opacity: 1 } : { opacity: 1, scale: 1, filter: 'blur(0px)' }}
+      transition={{ duration: 0.38, delay, ease: 'easeOut' }}>
+      {children}
+    </motion.div>
   )
 }
 
@@ -2754,12 +2850,12 @@ function HowItWorksScreen({ onContinue, onBack, isMobile }) {
       </Arrive>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
         {HOW_CARDS.map(([heading, body], i) => (
-          <Arrive key={heading} order={i + 1}>
+          <Materialize key={heading} delay={0.1 + i * 0.1}>
             <Card style={{ padding: 30 }}>
               <div style={{ ...type.title, fontSize: 18, color: T.ink }}>{heading}</div>
               <div style={{ ...type.small, fontSize: 14.5, marginTop: 10 }}>{body}</div>
             </Card>
-          </Arrive>
+          </Materialize>
         ))}
       </div>
       <Arrive order={4}>
@@ -3111,12 +3207,13 @@ function ProfileScreen({
 
   return (
     <div style={{ maxWidth: 620, margin: '0 auto' }}>
-      {/* Identity — a considered "cover" moment with its own faint wash */}
-      <Reveal>
+      {/* Identity — a considered "cover" moment that materializes in, with its
+          own faint neutral wash (no colour of its own). */}
+      <Materialize>
         <div style={{
           textAlign: 'center', padding: isMobile ? '52px 20px 40px' : '72px 20px 52px',
           marginBottom: 8, borderRadius: 24, position: 'relative', overflow: 'hidden',
-          background: `radial-gradient(ellipse 90% 70% at 50% 0%, ${T.accentBg}, transparent 70%)`,
+          background: `radial-gradient(ellipse 90% 70% at 50% 0%, color-mix(in oklab, ${T.ink} 5%, transparent), transparent 70%)`,
         }}>
           <div style={{ display: 'inline-block', position: 'relative' }}>
             <button onClick={() => setPickerOpen(o => !o)} aria-label="Edit avatar"
@@ -3142,7 +3239,7 @@ function ProfileScreen({
           )}
           <div style={{ ...type.small, fontSize: 13, color: T.sub, marginTop: 10 }}>{signature}</div>
         </div>
-      </Reveal>
+      </Materialize>
 
       {/* Avatar picker — 12 presets plus the Google photo when available */}
       <AnimatePresence>
