@@ -2475,15 +2475,31 @@ function PasswordStrength({ password }) {
 /* Single, ceremony-free way in. Google OAuth handles new and returning users
  * identically (Supabase creates the account on first sign-in), so there's one
  * screen and one action — no sign-in/sign-up split, no email/password form.
- * Email auth still lives in lib/auth.js, unused, for a future re-enable. */
-function AuthScreen({ onBack, initialError, onClearInitialError }) {
+ * Email auth still lives in lib/auth.js, unused, for a future re-enable.
+ *
+ * Deliberately flat: pure black/white page, no glass, blur, or shadow. The
+ * rest of the app keeps the glass system; this pre-auth screen does not. */
+function AuthScreen({ theme, onBack, initialError, onClearInitialError }) {
   const [busy, setBusy] = useState(false)
   const [pressed, setPressed] = useState(false)
+  const [hovered, setHovered] = useState(false)
   const [error, setError] = useState(null)
   const googleTimer = useRef(null)
   useEffect(() => () => clearTimeout(googleTimer.current), [])
 
   const shownError = error || initialError
+  const dark = theme === 'dark'
+
+  // Flat palette — pure page, mid-gray muted text, a button defined by a solid
+  // border (and a hair-lighter fill in dark mode so it reads off pure black).
+  const pageBg = dark ? '#000000' : '#FFFFFF'
+  const textColor = dark ? '#FFFFFF' : '#000000'
+  const muted = '#6E6E6E'
+  const btnBg = pressed || hovered
+    ? (dark ? '#161616' : '#F2F2F2')
+    : (dark ? '#0A0A0A' : '#FFFFFF')
+  const btnBorder = dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)'
+  const colorTween = 'background-color 200ms ease, color 200ms ease'
 
   async function handleGoogle() {
     if (busy) return // double-click guard — state disables the button one render later
@@ -2505,63 +2521,80 @@ function AuthScreen({ onBack, initialError, onClearInitialError }) {
   }
 
   return (
-    // Materialization entrance: blur sharpens in alongside a fade and slight
-    // scale, matching how the verdict card and modals resolve onto the screen.
-    <motion.div
-      initial={{ opacity: 0, scale: 0.96, filter: 'blur(14px)' }}
-      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
-      transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
-      style={{ width: '100%', maxWidth: 400, margin: '0 auto' }}>
-      {onBack && <BackArrow onClick={onBack} />}
+    // Full-bleed flat layer. Its own data-theme + pure inline background paints
+    // over the app's themed base; background/text ease on theme change (200ms).
+    <div data-theme={theme} style={{
+      minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center',
+      padding: 'calc(48px + env(safe-area-inset-top, 0px)) 20px calc(56px + env(safe-area-inset-bottom, 0px))',
+      background: pageBg, color: textColor, transition: colorTween,
+    }}>
+      <GlobalStyles />
+      {/* Entrance: a calm fade + gentle upward drift, no scale or blur. */}
+      <motion.div
+        initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.34, ease: 'easeOut' }}
+        style={{ width: '100%', maxWidth: 400, margin: '0 auto', textAlign: 'center' }}>
+        {onBack && <BackArrow onClick={onBack} />}
 
-      <div style={{ display: 'flex', justifyContent: 'center', color: T.ink, marginBottom: 32 }}>
-        <LogoMark size={40} />
-      </div>
-      <h1 style={{ ...type.display, fontSize: 30, color: T.ink, textAlign: 'center', margin: '0 0 12px', lineHeight: 1.15 }}>
-        Sign in with Google to continue
-      </h1>
-      <div style={{ ...type.small, fontSize: 14.5, textAlign: 'center', margin: '0 auto 30px', maxWidth: 320 }}>
-        The fastest, most secure way in — more sign-in options are coming soon.
-      </div>
+        <div style={{ display: 'flex', justifyContent: 'center', color: textColor, marginBottom: 32 }}>
+          <LogoMark size={40} />
+        </div>
+        <h1 style={{
+          ...type.display, fontSize: 30, color: textColor, margin: '0 0 12px',
+          lineHeight: 1.15, transition: colorTween,
+        }}>
+          Sign in with Google to continue
+        </h1>
+        <div style={{
+          ...type.small, fontSize: 14.5, color: muted, margin: '0 auto 30px', maxWidth: 320,
+        }}>
+          The fastest, most secure way in — more sign-in options are coming soon.
+        </div>
 
-      {/* Elevated glass card with a directional specular highlight concentrated
-          toward the upper-left, and the app's clickable-card hover lift. */}
-      <Card className="iq-elevated iq-lift" style={{ padding: 28, position: 'relative', overflow: 'hidden' }}>
-        <div aria-hidden="true" style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none', borderRadius: 'inherit',
-          background: 'radial-gradient(120% 100% at 0% 0%, rgba(255,255,255,0.14), rgba(255,255,255,0) 55%)',
-        }} />
         <button
           onClick={handleGoogle} disabled={busy}
           onPointerDown={() => setPressed(true)}
           onPointerUp={() => setPressed(false)}
-          onPointerLeave={() => setPressed(false)}
+          onPointerLeave={() => { setPressed(false); setHovered(false) }}
+          onPointerEnter={() => setHovered(true)}
           style={{
-            position: 'relative', width: '100%', background: T.card2, color: T.ink,
-            border: `1px solid ${T.lineHi}`, borderRadius: 999, padding: '15px 22px',
+            width: '100%', background: btnBg, color: textColor,
+            border: `1px solid ${btnBorder}`, borderRadius: 14, padding: '15px 22px',
             fontFamily: T.sans, fontSize: 15.5, fontWeight: 560,
-            cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1,
+            cursor: busy ? 'default' : 'pointer',
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 11,
-            // Soft accent glow marks this as the one meaningful action on the screen.
-            boxShadow: `0 8px 30px color-mix(in oklab, ${T.accent} 22%, transparent)`,
-            transform: pressed && !busy ? 'scale(0.975)' : 'scale(1)',
-            transition: `transform 140ms ${T.ease}, opacity 200ms ${T.ease}`,
+            transform: pressed && !busy ? 'scale(0.97)' : 'scale(1)',
+            transition: `transform 130ms ease, background-color 160ms ease, color 200ms ease`,
           }}>
-          {busy
-            ? <ButtonSpinner />
-            : <><GoogleG size={19} /> Continue with Google</>}
+          <AnimatePresence mode="wait" initial={false}>
+            {busy ? (
+              <motion.span key="spin" style={{ display: 'inline-flex' }}
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}>
+                <ButtonSpinner color={textColor} />
+              </motion.span>
+            ) : (
+              <motion.span key="label" style={{ display: 'inline-flex', alignItems: 'center', gap: 11 }}
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}>
+                <GoogleG size={19} /> Continue with Google
+              </motion.span>
+            )}
+          </AnimatePresence>
         </button>
-      </Card>
 
-      {shownError && (
-        <div role="alert" style={{
-          ...type.small, fontSize: 13.5, color: T.bad, textAlign: 'center',
-          marginTop: 18,
-        }}>
-          {shownError}
-        </div>
-      )}
-    </motion.div>
+        <AnimatePresence>
+          {shownError && (
+            <motion.div role="alert" key="err"
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              style={{ ...type.small, fontSize: 13.5, color: '#D46A6A', marginTop: 18 }}>
+              {shownError}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+    </div>
   )
 }
 
@@ -2878,8 +2911,17 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
   const [stage, setStage] = useState(() =>
     (typeof window !== 'undefined' && window.localStorage.getItem(LS_ONBOARD) === 'true') ? 'auth' : 'welcome')
 
-  // Where the user is in the three-step introduction; null hides the dots
-  const stepIndex = { welcome: 0, how: 1, auth: 2 }[stage] ?? null
+  // The Google sign-in screen is a flat, glass-free layer of its own — it owns
+  // its full-screen pure black/white background, so it renders outside the
+  // decorated welcome/how container rather than inside it.
+  if (stage === 'auth') {
+    return <AuthScreen theme={theme}
+      onBack={() => setStage('how')}
+      initialError={initialError} onClearInitialError={onClearInitialError} />
+  }
+
+  // Where the user is in the two-step introduction; null hides the dots
+  const stepIndex = { welcome: 0, how: 1 }[stage] ?? null
 
   // Onboarding follows the device's light/dark automatically — no manual toggle.
   // The base background fills into the safe areas so the top and bottom edges
@@ -2905,11 +2947,6 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
             <HowItWorksScreen isMobile={isMobile}
               onContinue={() => setStage('auth')} onBack={() => setStage('welcome')} />
           )}
-          {stage === 'auth' && (
-            <AuthScreen
-              onBack={() => setStage('how')}
-              initialError={initialError} onClearInitialError={onClearInitialError} />
-          )}
         </motion.div>
       </AnimatePresence>
 
@@ -2919,7 +2956,7 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
           position: 'absolute', bottom: 32, left: 0, right: 0,
           display: 'flex', justifyContent: 'center', gap: 8,
         }}>
-          {[0, 1, 2].map(i => (
+          {[0, 1].map(i => (
             <span key={i} style={{
               width: i === stepIndex ? 22 : 6, height: 6, borderRadius: 999,
               background: i === stepIndex ? T.accent : T.lineHi,
