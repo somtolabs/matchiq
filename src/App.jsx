@@ -3698,19 +3698,26 @@ export default function AuthRoot() {
 
   // Retroactive username gate: look up the handle once per signed-in user. Fast
   // and invisible for anyone who already has one; routes the rest to set one.
+  //
+  // The gate keys on WHICH user the handle was resolved for (usernameFor), not a
+  // separate loading boolean. Effects run after render, so on an account switch
+  // (user A signs out, user B signs in on the same device) a boolean flag lags a
+  // frame behind and the app would render once with B's session but A's stale
+  // @handle. Comparing usernameFor to the current user.id closes that window: the
+  // handle is only treated as resolved when it belongs to the user in hand.
   const [username, setUsername] = useState(null)
-  const [usernameLoading, setUsernameLoading] = useState(true)
+  const [usernameFor, setUsernameFor] = useState(null)
   useEffect(() => {
-    if (!authConfigured || !user) { setUsernameLoading(false); return }
-    setUsernameLoading(true)
+    if (!authConfigured || !user) return
     let cancelled = false
     getMyUsername(user.id).then(u => {
       if (cancelled) return
       setUsername(u)
-      setUsernameLoading(false)
+      setUsernameFor(user.id)
     })
     return () => { cancelled = true }
   }, [user])
+  const usernameResolved = !!user && usernameFor === user.id
 
   // Once signed in (any method), onboarding never replays — sign-outs land on sign in.
   useEffect(() => {
@@ -3730,8 +3737,9 @@ export default function AuthRoot() {
   // Arrived via a password-reset email: set the new password before entering
   if (recovery) return <ResetPasswordScreen theme={theme} onDone={clearRecovery} />
 
-  // Resolving whether the user has a handle — hold rather than flash the app.
-  if (usernameLoading) return <BrandedLoading theme={theme} />
+  // Resolving whether THIS user has a handle — hold rather than flash the app
+  // (and never flash the previous user's handle after an account switch).
+  if (!usernameResolved) return <BrandedLoading theme={theme} />
 
   // No handle yet (new sign-up or pre-feature user) → claim one before entering.
   if (!username) {
