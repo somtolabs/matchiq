@@ -1,8 +1,25 @@
 import { supabase } from './supabase.js'
 import { LS_ANALYSIS, LS_TRACKED, LS_AGENT_PERF } from './storage.js'
 
+/* Dev-only visibility into Supabase's email-sending calls. Production-grade
+ * delivery for confirmation/reset requires a real SMTP provider wired in the
+ * Supabase dashboard — the default testing relay rate-limits hard. This surfaces
+ * a rate-limit or delivery failure in the console so it's obvious when an email
+ * didn't actually send, rather than the UI silently pretending it did. It never
+ * reaches end users; the returned error still drives the visible UI state. */
+function logEmailDelivery(kind, error) {
+  if (!import.meta.env.DEV || !error) return error
+  const m = String(error.message || '').toLowerCase()
+  if (/rate limit|too many|over_email_send_rate|429/.test(m)) {
+    console.warn(`[email:${kind}] rate-limited by Supabase — the default relay caps sends. Wire a real SMTP provider in Authentication → Emails.`, error.message)
+  } else if (/smtp|send|deliver|email/.test(m)) {
+    console.warn(`[email:${kind}] delivery error — check the SMTP provider in the Supabase dashboard.`, error.message)
+  }
+  return error
+}
+
 export async function signUpWithEmail(email, password, name) {
-  return supabase.auth.signUp({
+  const res = await supabase.auth.signUp({
     email, password,
     options: {
       // Confirmation emails must land back on this app, not the project's
@@ -11,6 +28,8 @@ export async function signUpWithEmail(email, password, name) {
       ...(name ? { data: { name } } : {}),
     },
   })
+  logEmailDelivery('signup', res.error)
+  return res
 }
 
 export async function signInWithEmail(email, password) {
@@ -31,9 +50,13 @@ export async function signInWithGoogle() {
 }
 
 export async function resetPasswordForEmail(email) {
-  return supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: window.location.origin,
+  const res = await supabase.auth.resetPasswordForEmail(email, {
+    // Lands on a dedicated route; Vercel's SPA rewrite serves index.html there
+    // and useAuth reads the recovery token from the URL fragment.
+    redirectTo: `${window.location.origin}/reset-password`,
   })
+  logEmailDelivery('reset', res.error)
+  return res
 }
 
 export async function updatePassword(password) {
@@ -51,7 +74,9 @@ export async function signOut() {
 }
 
 export async function resendConfirmation(email) {
-  return supabase.auth.resend({ type: 'signup', email })
+  const res = await supabase.auth.resend({ type: 'signup', email })
+  logEmailDelivery('resend', res.error)
+  return res
 }
 
 export async function getSession() {

@@ -2512,7 +2512,17 @@ function AuthScreen({ mode, onMode, onBack, onForgot, initialError, onClearIniti
               <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 12 }}>
                 Nothing arriving? Give it a minute, check your spam folder, or go back and try another address.
               </div>
-              <div style={{ ...type.small, fontSize: 13, marginTop: 18 }}>
+              <div style={{ ...type.small, fontSize: 13, marginTop: 16 }}>
+                {resent ? (
+                  <span style={{ color: T.ink }}>Confirmation email sent — check your inbox.</span>
+                ) : (
+                  <button onClick={handleResend} style={{
+                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+                    fontFamily: T.sans, fontSize: 13, color: T.accent, fontWeight: 560,
+                  }}>Resend the confirmation email</button>
+                )}
+              </div>
+              <div style={{ ...type.small, fontSize: 13, marginTop: 14 }}>
                 Already have an account?{' '}
                 <button onClick={() => switchMode('signin')} style={{
                   background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
@@ -2977,11 +2987,13 @@ function UsernameEditor({ user, currentUsername, onSaved, autoFocus }) {
     setStatus('checking')
     clearTimeout(timer.current)
     timer.current = setTimeout(async () => {
-      const ok = await isUsernameAvailable(v)
+      // Exclude the user's own row so re-saving a lightly-edited handle that
+      // resolves back to theirs never falsely reads as taken.
+      const ok = await isUsernameAvailable(v, user?.id)
       setStatus(cur => (cur === 'checking' ? (ok ? 'available' : 'taken') : cur))
     }, 400)
     return () => clearTimeout(timer.current)
-  }, [value, currentUsername])
+  }, [value, currentUsername, user])
 
   const canSave = status === 'available'
 
@@ -2996,7 +3008,7 @@ function UsernameEditor({ user, currentUsername, onSaved, autoFocus }) {
   }
 
   const statusLine = {
-    invalid: { text: '3–20 characters: lowercase letters, numbers and underscores.', color: T.faint },
+    invalid: { text: '3–20 characters: lowercase letters, numbers, periods and underscores.', color: T.faint },
     checking: { text: 'Checking availability…', color: T.faint },
     available: { text: 'Available', color: T.good },
     taken: { text: 'That handle is already taken.', color: T.bad },
@@ -3014,7 +3026,7 @@ function UsernameEditor({ user, currentUsername, onSaved, autoFocus }) {
         <input
           autoFocus={autoFocus}
           value={value}
-          onChange={e => setValue(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20))}
+          onChange={e => setValue(e.target.value.toLowerCase().replace(/[^a-z0-9._]/g, '').slice(0, 20))}
           placeholder="yourhandle" autoComplete="off" autoCapitalize="none" spellCheck={false}
           onKeyDown={e => { if (e.key === 'Enter') save() }}
           style={{
@@ -3194,6 +3206,17 @@ function ProfileScreen({
       .forEach(a => { if (a.correct) { run += 1; if (run > bestStreak) bestStreak = run } else run = 0 })
   }
 
+  // Form timeline: the last several resolved calls in the order they settled,
+  // oldest → newest. Correct calls read in the accent, misses stay muted. This
+  // is the page's signature element — built only from resolved analyses.
+  const timeline = resolved.slice()
+    .sort((a, b) => (a.resolvedAt || a._ts || 0) - (b.resolvedAt || b._ts || 0))
+    .slice(-14)
+    .map(a => ({
+      correct: !!a.correct,
+      label: `${a.fixture?.home || a.recommendation?.pick || 'Match'}${a.fixture?.away ? ` vs ${a.fixture.away}` : ''} — ${a.correct ? 'correct' : 'missed'}`,
+    }))
+
   // Signature line: a stat-as-identity. Favor accuracy once there's a real
   // sample, otherwise the join-based line — always from real data.
   const signature = resolved.length >= 5
@@ -3296,6 +3319,54 @@ function ProfileScreen({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Form timeline — the page's distinctive element, drawn from real
+          resolved calls. Connected markers settle left (oldest) → right (newest). */}
+      <Reveal>
+        <div style={{ marginTop: 8, marginBottom: 8 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 14 }}>
+            <Eyebrow>Recent form</Eyebrow>
+            {resolved.length > 0 && (
+              <span style={{ ...type.small, fontSize: 12, color: T.faint }}>
+                last {timeline.length} resolved · oldest to newest
+              </span>
+            )}
+          </div>
+          <Card className="iq-elevated" style={{ padding: '30px 26px' }}>
+            {timeline.length === 0 ? (
+              <div style={{ ...type.small, fontSize: 13.5, color: T.faint, textAlign: 'center', padding: '8px 0' }}>
+                Your form line draws itself here as tracked matches resolve.
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+                {timeline.map((m, i) => (
+                  <React.Fragment key={i}>
+                    {i > 0 && (
+                      <span style={{ flex: 1, height: 2, background: T.line, minWidth: 6 }} />
+                    )}
+                    <span title={m.label} style={{
+                      width: 15, height: 15, borderRadius: '50%', flexShrink: 0,
+                      background: m.correct ? T.accent : 'transparent',
+                      border: `2px solid ${m.correct ? T.accent : T.lineHi}`,
+                      boxShadow: m.correct ? `0 0 0 4px ${T.accentBg}` : 'none',
+                    }} />
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
+            {timeline.length > 0 && (
+              <div style={{ display: 'flex', gap: 18, marginTop: 22, ...type.small, fontSize: 12, color: T.faint }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ width: 11, height: 11, borderRadius: '50%', background: T.accent }} /> Correct
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ width: 11, height: 11, borderRadius: '50%', border: `2px solid ${T.lineHi}` }} /> Missed
+                </span>
+              </div>
+            )}
+          </Card>
+        </div>
+      </Reveal>
 
       {/* Record */}
       <Reveal>

@@ -2,7 +2,7 @@ import { supabase } from './supabase.js'
 
 /* Username: a unique handle, enforced by its own table (auth metadata can't
  * guarantee uniqueness). Format mirrors the DB check constraint exactly. */
-export const USERNAME_RE = /^[a-z0-9_]{3,20}$/
+export const USERNAME_RE = /^[a-z0-9._]{3,20}$/
 
 export async function getMyUsername(userId) {
   if (!supabase || !userId) return null
@@ -16,16 +16,19 @@ export async function getMyUsername(userId) {
 }
 
 /* Availability check — the open SELECT policy lets us query across all users
- * for an exact match; it leaks nothing beyond "is this string taken". */
-export async function isUsernameAvailable(username) {
+ * for an exact match; it leaks nothing beyond "is this string taken". When
+ * editing, pass excludeUserId so the user's own current row doesn't read as
+ * taken (keeping your existing handle must stay "available" to re-save). */
+export async function isUsernameAvailable(username, excludeUserId) {
   if (!supabase) return false
   const { data, error } = await supabase
     .from('usernames')
-    .select('id')
+    .select('user_id')
     .eq('username', username)
     .maybeSingle()
   if (error) { console.warn('[username] check failed:', error.message); return false }
-  return !data
+  if (!data) return true
+  return excludeUserId ? data.user_id === excludeUserId : false
 }
 
 /* Claim or change: upsert on user_id. A unique-violation on username means
