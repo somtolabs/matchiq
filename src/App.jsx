@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import {
   Sun, Moon, ChevronLeft, ChevronRight, X as XIcon, Check, Heart,
-  Mail, ArrowUpRight, Plus, Minus, Eye, EyeOff,
+  Mail, ArrowUpRight, Plus, Minus, Eye, EyeOff, Pencil,
 } from 'lucide-react'
 import '@fontsource-variable/inter'
 
@@ -27,6 +27,7 @@ import { useAuth } from './hooks/useAuth.js'
 import { useUserData } from './hooks/useUserData.js'
 import { usePredictionLedger } from './hooks/usePredictionLedger.js'
 import { writePredictionToLedger, autoResolveInLedger, manualResolveInLedger } from './lib/ledger.js'
+import { USERNAME_RE, getMyUsername, isUsernameAvailable, claimUsername } from './lib/profile.js'
 
 /* ============================================================
  * QUIET SIGNAL — design language
@@ -547,7 +548,7 @@ function Wordmark({ size = 22, withMark = true }) {
   )
 }
 
-function Header({ theme, onToggleTheme, tab, onTab, isMobile, liveCount, user, onOpenProfile }) {
+function Header({ theme, onToggleTheme, tab, onTab, isMobile, liveCount, user, avatarChoice, onOpenProfile }) {
   const dateStr = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
   return (
     <header className="iq-bar" style={{
@@ -610,7 +611,7 @@ function Header({ theme, onToggleTheme, tab, onTab, isMobile, liveCount, user, o
               background: 'transparent', border: 'none', cursor: 'pointer', padding: 2,
               display: 'inline-flex', borderRadius: '50%',
             }}>
-              <Avatar user={user} size={28} />
+              <ResolvedAvatar user={user} avatarChoice={avatarChoice} size={28} />
             </button>
           )}
         </div>
@@ -2957,8 +2958,155 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
 }
 
 /* ============================================================
+ * USERNAME — live-checked handle, used at the gate and in profile
+ * ============================================================ */
+
+function UsernameEditor({ user, currentUsername, onSaved, autoFocus }) {
+  const [value, setValue] = useState(currentUsername || '')
+  const [status, setStatus] = useState('idle') // idle|invalid|checking|available|taken|current
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const timer = useRef(null)
+
+  useEffect(() => {
+    setError(null)
+    const v = value.trim().toLowerCase()
+    if (!v) { setStatus('idle'); return }
+    if (currentUsername && v === currentUsername) { setStatus('current'); return }
+    if (!USERNAME_RE.test(v)) { setStatus('invalid'); return }
+    setStatus('checking')
+    clearTimeout(timer.current)
+    timer.current = setTimeout(async () => {
+      const ok = await isUsernameAvailable(v)
+      setStatus(cur => (cur === 'checking' ? (ok ? 'available' : 'taken') : cur))
+    }, 400)
+    return () => clearTimeout(timer.current)
+  }, [value, currentUsername])
+
+  const canSave = status === 'available'
+
+  async function save() {
+    if (!canSave || saving) return
+    setSaving(true); setError(null)
+    const { error: err } = await claimUsername(user.id, value.trim().toLowerCase())
+    setSaving(false)
+    if (err === 'taken') { setStatus('taken'); return }
+    if (err) { setError('Could not save that handle — please try again.'); return }
+    onSaved(value.trim().toLowerCase())
+  }
+
+  const statusLine = {
+    invalid: { text: '3–20 characters: lowercase letters, numbers and underscores.', color: T.faint },
+    checking: { text: 'Checking availability…', color: T.faint },
+    available: { text: 'Available', color: T.good },
+    taken: { text: 'That handle is already taken.', color: T.bad },
+    current: { text: 'This is your current handle.', color: T.faint },
+  }[status]
+
+  return (
+    <div>
+      <div style={{
+        display: 'flex', alignItems: 'center', background: T.card2,
+        border: `1px solid ${status === 'taken' ? T.bad : status === 'available' ? T.accent : T.line}`,
+        borderRadius: 12, padding: '0 14px', transition: `border-color 200ms ${T.ease}`,
+      }}>
+        <span style={{ ...type.body, fontSize: 16, color: T.faint, marginRight: 2 }}>@</span>
+        <input
+          autoFocus={autoFocus}
+          value={value}
+          onChange={e => setValue(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20))}
+          placeholder="yourhandle" autoComplete="off" autoCapitalize="none" spellCheck={false}
+          onKeyDown={e => { if (e.key === 'Enter') save() }}
+          style={{
+            flex: 1, background: 'transparent', color: T.ink, border: 'none', outline: 'none',
+            fontFamily: T.mono, fontSize: 15.5, padding: '12px 8px',
+          }} />
+        {status === 'available' && <Check size={17} strokeWidth={2.4} style={{ color: T.accent }} />}
+        {status === 'checking' && <ButtonSpinner color="var(--iq-faint)" />}
+      </div>
+      {statusLine && (
+        <div style={{ ...type.small, fontSize: 12.5, color: statusLine.color, marginTop: 8 }}>{statusLine.text}</div>
+      )}
+      {error && <div style={{ ...type.small, fontSize: 12.5, color: T.bad, marginTop: 8 }}>{error}</div>}
+      <Button kind="primary" disabled={!canSave || saving}
+        onClick={save} style={{ width: '100%', padding: '12px 22px', fontSize: 15, marginTop: 16 }}>
+        {saving ? <ButtonSpinner /> : (currentUsername ? 'Save handle' : 'Claim handle')}
+      </Button>
+    </div>
+  )
+}
+
+/* Post-auth gate: shown to any signed-in user who has no username yet — both
+ * brand-new sign-ups and existing users from before the feature existed. */
+function UsernameScreen({ theme, user, onSaved }) {
+  return (
+    <div data-theme={theme} style={{
+      minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center',
+      padding: 'calc(32px + env(safe-area-inset-top,0px)) 20px calc(32px + env(safe-area-inset-bottom,0px))',
+      position: 'relative', zIndex: 1,
+    }}>
+      <GlobalStyles />
+      <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, ease: 'easeOut' }} style={{ width: '100%', maxWidth: 400 }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 26 }}><Wordmark size={24} /></div>
+        <h1 style={{ ...type.display, fontSize: 30, color: T.ink, textAlign: 'center', margin: '0 0 8px' }}>
+          Pick your handle
+        </h1>
+        <div style={{ ...type.small, fontSize: 14.5, textAlign: 'center', marginBottom: 26 }}>
+          It's how you'll be known on MatchIQ — you can change it later.
+        </div>
+        <Card className="iq-elevated" style={{ padding: 28 }}>
+          <UsernameEditor user={user} currentUsername={null} onSaved={onSaved} autoFocus />
+        </Card>
+      </motion.div>
+    </div>
+  )
+}
+
+/* ============================================================
  * PROFILE — identity, record, preferences, sign out
  * ============================================================ */
+
+/* Twelve original geometric avatar marks — one cohesive family built from the
+ * app's accent blue plus three muted tones (indigo, teal, amber) over dark
+ * tinted grounds. Each is a distinct simple composition, legible at 32–96px. */
+const AV = { blue: '#2997FF', ind: '#6C6BE8', teal: '#33B7A6', amber: '#F0B24C' }
+const AV_BG = { navy: '#101B33', plum: '#241633', deep: '#0E2A2A', dusk: '#1B1A3A' }
+export const AVATAR_PRESET_IDS = Array.from({ length: 12 }, (_, i) => `preset_${i + 1}`)
+
+function PresetGlyph({ id }) {
+  switch (id) {
+    case 'preset_1': return (<g><rect width="64" height="64" fill={AV_BG.navy}/><circle cx="32" cy="32" r="20" fill="none" stroke={AV.blue} strokeWidth="4"/><circle cx="32" cy="32" r="11" fill="none" stroke={AV.teal} strokeWidth="4"/><circle cx="32" cy="32" r="3.5" fill={AV.amber}/></g>)
+    case 'preset_2': return (<g><rect width="64" height="64" fill={AV_BG.dusk}/><path d="M0 64 L64 0 L64 64 Z" fill={AV.blue}/><path d="M0 0 L0 64 L64 0 Z" fill={AV.ind} opacity="0.55"/></g>)
+    case 'preset_3': return (<g><rect width="64" height="64" fill={AV_BG.deep}/><path d="M14 50 A36 36 0 0 1 50 14 L50 50 Z" fill={AV.teal}/><circle cx="22" cy="42" r="5" fill={AV.amber}/></g>)
+    case 'preset_4': return (<g><rect width="64" height="64" fill={AV_BG.plum}/><path d="M32 16 L50 46 L14 46 Z" fill={AV.blue}/><path d="M32 30 L40 46 L24 46 Z" fill={AV.amber}/></g>)
+    case 'preset_5': return (<g><rect width="64" height="64" fill={AV_BG.navy}/><circle cx="25" cy="32" r="16" fill={AV.blue} opacity="0.85"/><circle cx="39" cy="32" r="16" fill={AV.amber} opacity="0.7"/></g>)
+    case 'preset_6': return (<g><rect width="64" height="64" fill={AV_BG.dusk}/><circle cx="24" cy="24" r="7" fill={AV.blue}/><circle cx="40" cy="24" r="7" fill={AV.teal}/><circle cx="24" cy="40" r="7" fill={AV.teal}/><circle cx="40" cy="40" r="7" fill={AV.blue}/></g>)
+    case 'preset_7': return (<g><rect width="64" height="64" fill={AV_BG.navy}/><rect x="16" y="36" width="8" height="14" rx="4" fill={AV.teal}/><rect x="28" y="26" width="8" height="24" rx="4" fill={AV.blue}/><rect x="40" y="16" width="8" height="34" rx="4" fill={AV.amber}/></g>)
+    case 'preset_8': return (<g><rect width="64" height="64" fill={AV_BG.deep}/><path d="M16 38 L32 24 L48 38" fill="none" stroke={AV.blue} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/><path d="M16 48 L32 34 L48 48" fill="none" stroke={AV.teal} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/></g>)
+    case 'preset_9': return (<g><rect width="64" height="64" fill={AV_BG.plum}/><circle cx="32" cy="32" r="18" fill={AV.blue}/><circle cx="40" cy="28" r="15" fill={AV_BG.plum}/><circle cx="24" cy="26" r="2.5" fill={AV.amber}/></g>)
+    case 'preset_10': return (<g><rect width="64" height="64" fill={AV_BG.navy}/><rect x="27" y="14" width="10" height="36" rx="5" fill={AV.amber}/><rect x="14" y="27" width="36" height="10" rx="5" fill={AV.blue} opacity="0.9"/></g>)
+    case 'preset_11': return (<g><rect width="64" height="64" fill={AV_BG.dusk}/><rect x="14" y="14" width="36" height="36" rx="9" fill="none" stroke={AV.teal} strokeWidth="4"/><rect x="24" y="24" width="16" height="16" rx="5" fill={AV.blue}/></g>)
+    case 'preset_12': return (<g><rect width="64" height="64" fill={AV_BG.deep}/>{[0,45,90,135,180,225,270,315].map(a => { const r=a*Math.PI/180; return <line key={a} x1={32+9*Math.cos(r)} y1={32+9*Math.sin(r)} x2={32+22*Math.cos(r)} y2={32+22*Math.sin(r)} stroke={AV.blue} strokeWidth="4" strokeLinecap="round"/> })}<circle cx="32" cy="32" r="6" fill={AV.amber}/></g>)
+    default: return <rect width="64" height="64" fill={AV_BG.navy}/>
+  }
+}
+
+function PresetAvatar({ id, size = 28 }) {
+  return (
+    <span style={{ width: size, height: size, borderRadius: '50%', overflow: 'hidden', display: 'inline-flex', flexShrink: 0, border: `1px solid ${T.line}` }}>
+      <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true"><PresetGlyph id={id} /></svg>
+    </span>
+  )
+}
+
+/* Resolves what to actually render: an explicit preset wins; otherwise a Google
+ * user keeps their photo and everyone else falls back to the initial circle. */
+function ResolvedAvatar({ user, avatarChoice, size = 28 }) {
+  const effective = avatarChoice || (user?.user_metadata?.avatar_url ? 'google' : null)
+  if (effective && effective.startsWith('preset_')) return <PresetAvatar id={effective} size={size} />
+  return <Avatar user={user} size={size} />
+}
 
 function Avatar({ user, size = 28 }) {
   const [failed, setFailed] = useState(false)
@@ -3018,10 +3166,14 @@ function Segmented({ value, options, onChange }) {
 function ProfileScreen({
   user, analysisCache, themeMode, onThemeMode,
   emailNotifications, onEmailNotifications, onSignOut, isMobile,
+  avatarChoice, onAvatarChoice, username, onUsernameChange,
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [editingUsername, setEditingUsername] = useState(false)
 
   const displayName = user?.user_metadata?.name || user?.user_metadata?.full_name || user?.email || ''
+  const googlePhoto = user?.user_metadata?.avatar_url
   const memberSince = user?.created_at
     ? new Date(user.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
     : null
@@ -3042,7 +3194,15 @@ function ProfileScreen({
       .forEach(a => { if (a.correct) { run += 1; if (run > bestStreak) bestStreak = run } else run = 0 })
   }
 
+  // Signature line: a stat-as-identity. Favor accuracy once there's a real
+  // sample, otherwise the join-based line — always from real data.
+  const signature = resolved.length >= 5
+    ? `${accuracy}% accuracy across ${resolved.length} resolved ${resolved.length === 1 ? 'match' : 'matches'}`
+    : memberSince ? `Reading matches since ${memberSince}` : 'Just getting started'
+
   const deleteHref = `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent('Delete my account')}&body=${encodeURIComponent(`Please delete my MatchIQ account associated with ${user?.email || ''}`)}`
+
+  function chooseAvatar(id) { onAvatarChoice(id); setPickerOpen(false) }
 
   const StatCard = ({ label, big, bigColor = T.ink, bigSize = 44, context }) => (
     <Card style={{ padding: 28 }}>
@@ -3059,24 +3219,83 @@ function ProfileScreen({
 
   return (
     <div style={{ maxWidth: 620, margin: '0 auto' }}>
-      {/* Identity */}
+      {/* Identity — a considered "cover" moment with its own faint wash */}
       <Reveal>
-        <div style={{ textAlign: 'center', padding: isMobile ? '48px 0' : '72px 0 64px' }}>
-          <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <span className="iq-halo" style={{ display: 'inline-flex', borderRadius: '50%' }}>
-              <Avatar user={user} size={isMobile ? 84 : 100} />
-            </span>
+        <div style={{
+          textAlign: 'center', padding: isMobile ? '52px 20px 40px' : '72px 20px 52px',
+          marginBottom: 8, borderRadius: 24, position: 'relative', overflow: 'hidden',
+          background: `radial-gradient(ellipse 90% 70% at 50% 0%, ${T.accentBg}, transparent 70%)`,
+        }}>
+          <div style={{ display: 'inline-block', position: 'relative' }}>
+            <button onClick={() => setPickerOpen(o => !o)} aria-label="Edit avatar"
+              className="iq-halo" style={{
+                display: 'inline-flex', borderRadius: '50%', padding: 0, border: 'none',
+                background: 'transparent', cursor: 'pointer',
+              }}>
+              <ResolvedAvatar user={user} avatarChoice={avatarChoice} size={isMobile ? 88 : 104} />
+            </button>
+            <button onClick={() => setPickerOpen(o => !o)} aria-label="Edit avatar" style={{
+              position: 'absolute', right: -2, bottom: -2, width: 32, height: 32, borderRadius: '50%',
+              background: T.accent, color: T.accentInk, border: `2px solid ${T.bg}`, cursor: 'pointer',
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            }}>
+              <Pencil size={14} strokeWidth={2} />
+            </button>
           </div>
-          <div style={{ ...type.display, fontSize: isMobile ? 30 : 38, color: T.ink, marginTop: 24 }}>{displayName}</div>
-          <div style={{ ...type.small, fontSize: 14, marginTop: 8 }}>{user?.email}</div>
-          {memberSince && (
-            <span className="iq-glass" style={{
-              display: 'inline-block', marginTop: 14, ...type.small, fontSize: 12, color: T.faint,
-              background: T.card, border: `1px solid ${T.line}`, borderRadius: 999, padding: '5px 14px',
-            }}>Member since {memberSince}</span>
+          <div style={{ ...type.display, fontSize: isMobile ? 28 : 34, color: T.ink, marginTop: 22 }}>{displayName}</div>
+          {username && (
+            <div style={{ fontFamily: T.mono, fontSize: 15, fontWeight: 600, color: T.accent, marginTop: 8 }}>
+              @{username}
+            </div>
           )}
+          <div style={{ ...type.small, fontSize: 13, color: T.sub, marginTop: 10 }}>{signature}</div>
         </div>
       </Reveal>
+
+      {/* Avatar picker — 12 presets plus the Google photo when available */}
+      <AnimatePresence>
+        {pickerOpen && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            style={{ overflow: 'hidden' }}>
+            <Card className="iq-elevated" style={{ padding: 22, marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                <Eyebrow>Choose an avatar</Eyebrow>
+                <button onClick={() => setPickerOpen(false)} aria-label="Close" style={{
+                  background: 'transparent', border: 'none', cursor: 'pointer', color: T.faint, display: 'inline-flex', padding: 4,
+                }}><XIcon size={16} strokeWidth={2} /></button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(56px, 1fr))', gap: 12 }}>
+                {googlePhoto && (
+                  <button onClick={() => chooseAvatar('google')} title="Your Google photo" style={{
+                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+                    display: 'inline-flex', justifyContent: 'center',
+                    outline: (avatarChoice || 'google') === 'google' ? `2px solid ${T.accent}` : 'none',
+                    outlineOffset: 3, borderRadius: '50%',
+                  }}>
+                    <Avatar user={user} size={52} />
+                  </button>
+                )}
+                {AVATAR_PRESET_IDS.map(id => (
+                  <button key={id} onClick={() => chooseAvatar(id)} style={{
+                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+                    display: 'inline-flex', justifyContent: 'center',
+                    outline: avatarChoice === id ? `2px solid ${T.accent}` : 'none',
+                    outlineOffset: 3, borderRadius: '50%',
+                  }}>
+                    <PresetAvatar id={id} size={52} />
+                  </button>
+                ))}
+              </div>
+              {googlePhoto && (
+                <div style={{ ...type.small, fontSize: 12, color: T.faint, marginTop: 14 }}>
+                  The first option is your Google photo.
+                </div>
+              )}
+            </Card>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Record */}
       <Reveal>
@@ -3103,6 +3322,32 @@ function ProfileScreen({
         <div style={{ marginTop: 40 }}>
           <Eyebrow style={{ marginBottom: 10 }}>Preferences</Eyebrow>
           <Card className="iq-elevated" style={{ padding: '6px 24px' }}>
+            <div style={{ borderBottom: `1px solid ${T.line}`, padding: '4px 0' }}>
+              <div style={{ ...prefRow }}>
+                <span style={{ ...type.small, fontSize: 14.5, color: T.ink, fontWeight: 540 }}>Handle</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ fontFamily: T.mono, fontSize: 13.5, color: T.accent }}>
+                    {username ? `@${username}` : 'not set'}
+                  </span>
+                  <button onClick={() => setEditingUsername(e => !e)} style={{
+                    background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+                    ...type.small, fontSize: 13, color: T.sub, fontWeight: 560,
+                  }}>{editingUsername ? 'Cancel' : 'Edit'}</button>
+                </div>
+              </div>
+              <AnimatePresence>
+                {editingUsername && (
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }} transition={{ duration: 0.25 }}
+                    style={{ overflow: 'hidden' }}>
+                    <div style={{ padding: '6px 0 16px' }}>
+                      <UsernameEditor user={user} currentUsername={username}
+                        onSaved={(u) => { onUsernameChange(u); setEditingUsername(false) }} />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
             <div style={{ ...prefRow, borderBottom: `1px solid ${T.line}` }}>
               <span style={{ ...type.small, fontSize: 14.5, color: T.ink, fontWeight: 540 }}>Theme</span>
               <Segmented value={themeMode} onChange={onThemeMode} options={[
@@ -3364,9 +3609,37 @@ function DiagnosticPanel({ apiHealth, open, onToggle, onRetryFootball, onRetryOd
  * Root — auth gate wraps the app; MatchIQ's logic is preserved
  * ============================================================ */
 
+function BrandedLoading({ theme }) {
+  return (
+    <div data-theme={theme} style={{ minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center' }}>
+      <GlobalStyles />
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18 }}>
+        <Wordmark size={24} />
+        <ButtonSpinner color="var(--iq-accent)" />
+      </div>
+    </div>
+  )
+}
+
 export default function AuthRoot() {
   const [theme] = useTheme()
   const { user, loading, authError, setAuthError, recovery, clearRecovery } = useAuth()
+
+  // Retroactive username gate: look up the handle once per signed-in user. Fast
+  // and invisible for anyone who already has one; routes the rest to set one.
+  const [username, setUsername] = useState(null)
+  const [usernameLoading, setUsernameLoading] = useState(true)
+  useEffect(() => {
+    if (!authConfigured || !user) { setUsernameLoading(false); return }
+    setUsernameLoading(true)
+    let cancelled = false
+    getMyUsername(user.id).then(u => {
+      if (cancelled) return
+      setUsername(u)
+      setUsernameLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [user])
 
   // Once signed in (any method), onboarding never replays — sign-outs land on sign in.
   useEffect(() => {
@@ -3376,17 +3649,7 @@ export default function AuthRoot() {
   // Without Supabase keys the app runs un-gated, exactly as before.
   if (!authConfigured) return <MatchIQ />
 
-  if (loading) {
-    return (
-      <div data-theme={theme} style={{ minHeight: '100dvh', width: '100%', display: 'grid', placeItems: 'center' }}>
-        <GlobalStyles />
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 18 }}>
-          <Wordmark size={24} />
-          <ButtonSpinner color="var(--iq-accent)" />
-        </div>
-      </div>
-    )
-  }
+  if (loading) return <BrandedLoading theme={theme} />
 
   if (!user) {
     return <OnboardingFlow theme={theme} initialError={authError}
@@ -3396,15 +3659,24 @@ export default function AuthRoot() {
   // Arrived via a password-reset email: set the new password before entering
   if (recovery) return <ResetPasswordScreen theme={theme} onDone={clearRecovery} />
 
-  return <MatchIQ user={user} />
+  // Resolving whether the user has a handle — hold rather than flash the app.
+  if (usernameLoading) return <BrandedLoading theme={theme} />
+
+  // No handle yet (new sign-up or pre-feature user) → claim one before entering.
+  if (!username) {
+    return <UsernameScreen theme={theme} user={user} onSaved={setUsername} />
+  }
+
+  return <MatchIQ user={user} username={username} onUsernameChange={setUsername} />
 }
 
-function MatchIQ({ user }) {
+function MatchIQ({ user, username, onUsernameChange }) {
   const width = useWindowWidth()
   const isMobile = width < 768
 
   const [theme, toggleTheme, setThemeMode, themeMode] = useTheme()
   const [emailNotifications, setEmailNotifications] = useState(false)
+  const [avatarChoice, setAvatarChoice] = useState(null)
 
   const [oddsCache, setOddsCache] = useState([])
   const [oddsUpdatedAt, setOddsUpdatedAt] = useState(null)
@@ -3479,9 +3751,10 @@ function MatchIQ({ user }) {
 
   /* -------- account sync — pull once on sign-in, then debounced push -------- */
   const trackedArr = useMemo(() => Array.from(tracked), [tracked])
-  useUserData(user, { tracked: trackedArr, analysisCache, agentPerf, theme, emailNotifications }, (row) => {
+  useUserData(user, { tracked: trackedArr, analysisCache, agentPerf, theme, emailNotifications, avatarChoice }, (row) => {
     if (row.theme === 'light' || row.theme === 'dark') setThemeMode(row.theme)
     if (typeof row.email_notifications === 'boolean') setEmailNotifications(row.email_notifications)
+    if (typeof row.avatar_choice === 'string') setAvatarChoice(row.avatar_choice)
     if (Array.isArray(row.tracked) && row.tracked.length) {
       setTracked(prev => new Set([...prev, ...row.tracked]))
     }
@@ -3756,6 +4029,8 @@ function MatchIQ({ user }) {
       <ProfileScreen user={user} analysisCache={analysisCache} isMobile={isMobile}
         themeMode={themeMode} onThemeMode={setThemeMode}
         emailNotifications={emailNotifications} onEmailNotifications={setEmailNotifications}
+        avatarChoice={avatarChoice} onAvatarChoice={setAvatarChoice}
+        username={username} onUsernameChange={onUsernameChange}
         onSignOut={async () => { try { await signOut() } catch (e) { console.warn('sign out failed:', e.message) } }} />
     )
     if (activeTab === 'about') return (
@@ -3772,7 +4047,7 @@ function MatchIQ({ user }) {
       <GlobalStyles />
       <Header theme={theme} onToggleTheme={toggleTheme}
         tab={activeTab} onTab={switchTab} isMobile={isMobile} liveCount={liveCount}
-        user={user} onOpenProfile={() => switchTab('profile')} />
+        user={user} avatarChoice={avatarChoice} onOpenProfile={() => switchTab('profile')} />
       <main style={{
         maxWidth: 720, margin: '0 auto',
         padding: isMobile ? '18px 20px 100px' : '28px 28px 88px',
