@@ -2395,163 +2395,96 @@ function PasswordStrength({ password }) {
   )
 }
 
-function AuthScreen({ mode, onMode, onBack, initialError, onClearInitialError }) {
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(null) // null | 'google' | 'email'
+/* Single, ceremony-free way in. Google OAuth handles new and returning users
+ * identically (Supabase creates the account on first sign-in), so there's one
+ * screen and one action — no sign-in/sign-up split, no email/password form.
+ * Email auth still lives in lib/auth.js, unused, for a future re-enable. */
+function AuthScreen({ onBack, initialError, onClearInitialError }) {
+  const [busy, setBusy] = useState(false)
+  const [pressed, setPressed] = useState(false)
   const [error, setError] = useState(null)
   const googleTimer = useRef(null)
   useEffect(() => () => clearTimeout(googleTimer.current), [])
 
   const shownError = error || initialError
 
-  function switchMode(m) {
-    onMode(m); setError(null)
-    onClearInitialError?.()
-  }
-
-  /* Errors surface the problem but never the password the user typed */
-  function fail(message) {
-    setError(message)
-    setPassword('')
-  }
-
   async function handleGoogle() {
     if (busy) return // double-click guard — state disables the button one render later
-    setBusy('google'); setError(null); onClearInitialError?.()
+    setBusy(true); setError(null); onClearInitialError?.()
     try {
       const { error: err } = await signInWithGoogle()
-      if (err) { fail(friendlyAuthError(err.message)); setBusy(null); return }
+      if (err) { setError(friendlyAuthError(err.message)); setBusy(false); return }
       // Success normally navigates away. If the user cancels mid-redirect or the
       // navigation never happens, don't spin forever — reset with a clear message.
       googleTimer.current = setTimeout(() => {
         setBusy(b => {
-          if (b === 'google') {
-            setError('Sign in was cancelled or timed out — please try again.')
-            return null
-          }
+          if (b) { setError('Sign-in was cancelled — please try again.'); return false }
           return b
         })
       }, 10000)
     } catch (e) {
-      fail(friendlyAuthError(e.message)); setBusy(null)
+      setError(friendlyAuthError(e.message)); setBusy(false)
     }
   }
-
-  async function handleEmail(e) {
-    e.preventDefault()
-    if (busy) return // double-submission guard
-    // First line of defense before the network: shape of the input
-    if (!EMAIL_RE.test(email.trim())) {
-      setError("That doesn't look like a valid email address."); return
-    }
-    if (mode === 'signup' && (password.length < 8 || !/\d/.test(password))) {
-      setError('Passwords need at least 8 characters and one number.'); return
-    }
-    setBusy('email'); setError(null); onClearInitialError?.()
-    try {
-      if (mode === 'signup') {
-        // Confirmation is disabled, so a successful sign-up returns a live
-        // session immediately and onAuthChange moves the user into the app —
-        // there is no "check your email" step. An already-registered email now
-        // returns a real error, which we surface honestly (sign in instead).
-        const { data, error: err } = await signUpWithEmail(email.trim(), password, name.trim())
-        if (err) fail(friendlyAuthError(err.message))
-        else if (!data?.session) fail('We couldn’t start your session. Please try signing in.')
-      } else {
-        const { error: err } = await signInWithEmail(email.trim(), password)
-        if (err) fail(friendlyAuthError(err.message))
-      }
-    } catch (e2) {
-      fail(friendlyAuthError(e2.message))
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const busyAny = busy != null
 
   return (
-    <div style={{ width: '100%', maxWidth: 400, margin: '0 auto' }}>
+    // Materialization entrance: blur sharpens in alongside a fade and slight
+    // scale, matching how the verdict card and modals resolve onto the screen.
+    <motion.div
+      initial={{ opacity: 0, scale: 0.96, filter: 'blur(14px)' }}
+      animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+      transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+      style={{ width: '100%', maxWidth: 400, margin: '0 auto' }}>
       {onBack && <BackArrow onClick={onBack} />}
-      <div>
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 28 }}>
-          <Wordmark size={24} />
-        </div>
-        <h1 style={{ ...type.display, fontSize: 32, color: T.ink, textAlign: 'center', margin: '0 0 8px' }}>
-          {mode === 'signin' ? 'Welcome back.' : 'Create your account'}
-        </h1>
-        {mode === 'signup' && (
-          <div style={{ ...type.small, fontSize: 14.5, textAlign: 'center', marginBottom: 26 }}>
-            So your analyses follow you across devices.
-          </div>
-        )}
-        {mode === 'signin' && <div style={{ marginBottom: 18 }} />}
 
-        <Card className="iq-elevated" style={{ padding: 28 }}>
-          <>
-              <button onClick={handleGoogle} disabled={busyAny} className="iq-lift" style={{
-                width: '100%', background: T.card2, color: T.ink,
-                border: `1px solid ${T.lineHi}`, borderRadius: 999, padding: '13px 22px',
-                fontFamily: T.sans, fontSize: 15, fontWeight: 560,
-                cursor: busyAny ? 'default' : 'pointer', opacity: busy === 'email' ? 0.5 : 1,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-              }}>
-                {busy === 'google'
-                  ? <ButtonSpinner />
-                  : <><GoogleG size={18} /> Continue with Google</>}
-              </button>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '22px 0' }}>
-                <span style={{ flex: 1, height: 1, background: T.line }} />
-                <span style={{ ...type.small, fontSize: 12, color: T.faint }}>or continue with email</span>
-                <span style={{ flex: 1, height: 1, background: T.line }} />
-              </div>
-
-              <form onSubmit={handleEmail} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                {mode === 'signup' && (
-                  <AuthInput label="Name" type="text" value={name} onChange={setName}
-                    autoComplete="name" disabled={busyAny} />
-                )}
-                <AuthInput label="Email" type="email" value={email} onChange={setEmail}
-                  autoComplete="email" disabled={busyAny} />
-                <AuthInput label="Password" type="password" value={password} onChange={setPassword}
-                  autoComplete={mode === 'signup' ? 'new-password' : 'current-password'} disabled={busyAny} />
-                {mode === 'signup' && <PasswordStrength password={password} />}
-                <Button kind="primary" disabled={busyAny}
-                  style={{ width: '100%', padding: '13px 22px', fontSize: 15, marginTop: 4 }}
-                  onClick={() => {}}>
-                  {busy === 'email'
-                    ? <ButtonSpinner />
-                    : mode === 'signin' ? 'Sign in' : 'Create account'}
-                </Button>
-              </form>
-
-              {shownError && (
-                <div role="alert" style={{
-                  ...type.small, fontSize: 13.5, color: T.bad, background: T.badBg,
-                  borderRadius: 12, padding: '11px 15px', marginTop: 16,
-                }}>
-                  {shownError}
-                </div>
-              )}
-
-              <div style={{ textAlign: 'center', marginTop: 20 }}>
-                {mode === 'signin' ? (
-                  <button onClick={() => switchMode('signup')} style={{ background: 'transparent', border: 'none', cursor: 'pointer', ...type.small, color: T.sub }}>
-                    New here? <span style={{ color: T.accent, fontWeight: 560 }}>Create an account</span>
-                  </button>
-                ) : (
-                  <button onClick={() => switchMode('signin')} style={{ background: 'transparent', border: 'none', cursor: 'pointer', ...type.small, color: T.sub }}>
-                    Already have an account? <span style={{ color: T.accent, fontWeight: 560 }}>Sign in</span>
-                  </button>
-                )}
-              </div>
-            </>
-        </Card>
+      <div style={{ display: 'flex', justifyContent: 'center', color: T.ink, marginBottom: 32 }}>
+        <LogoMark size={40} />
       </div>
-    </div>
+      <h1 style={{ ...type.display, fontSize: 30, color: T.ink, textAlign: 'center', margin: '0 0 12px', lineHeight: 1.15 }}>
+        Sign in with Google to continue
+      </h1>
+      <div style={{ ...type.small, fontSize: 14.5, textAlign: 'center', margin: '0 auto 30px', maxWidth: 320 }}>
+        The fastest, most secure way in — more sign-in options are coming soon.
+      </div>
+
+      {/* Elevated glass card with a directional specular highlight concentrated
+          toward the upper-left, and the app's clickable-card hover lift. */}
+      <Card className="iq-elevated iq-lift" style={{ padding: 28, position: 'relative', overflow: 'hidden' }}>
+        <div aria-hidden="true" style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none', borderRadius: 'inherit',
+          background: 'radial-gradient(120% 100% at 0% 0%, rgba(255,255,255,0.14), rgba(255,255,255,0) 55%)',
+        }} />
+        <button
+          onClick={handleGoogle} disabled={busy}
+          onPointerDown={() => setPressed(true)}
+          onPointerUp={() => setPressed(false)}
+          onPointerLeave={() => setPressed(false)}
+          style={{
+            position: 'relative', width: '100%', background: T.card2, color: T.ink,
+            border: `1px solid ${T.lineHi}`, borderRadius: 999, padding: '15px 22px',
+            fontFamily: T.sans, fontSize: 15.5, fontWeight: 560,
+            cursor: busy ? 'default' : 'pointer', opacity: busy ? 0.7 : 1,
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 11,
+            // Soft accent glow marks this as the one meaningful action on the screen.
+            boxShadow: `0 8px 30px color-mix(in oklab, ${T.accent} 22%, transparent)`,
+            transform: pressed && !busy ? 'scale(0.975)' : 'scale(1)',
+            transition: `transform 140ms ${T.ease}, opacity 200ms ${T.ease}`,
+          }}>
+          {busy
+            ? <ButtonSpinner />
+            : <><GoogleG size={19} /> Continue with Google</>}
+        </button>
+      </Card>
+
+      {shownError && (
+        <div role="alert" style={{
+          ...type.small, fontSize: 13.5, color: T.bad, textAlign: 'center',
+          marginTop: 18,
+        }}>
+          {shownError}
+        </div>
+      )}
+    </motion.div>
   )
 }
 
@@ -2847,10 +2780,10 @@ function HowItWorksScreen({ onContinue, onBack, isMobile }) {
 function OnboardingFlow({ theme, initialError, onClearInitialError }) {
   const isMobile = useWindowWidth() < 768
   const [stage, setStage] = useState(() =>
-    (typeof window !== 'undefined' && window.localStorage.getItem(LS_ONBOARD) === 'true') ? 'signin' : 'welcome')
+    (typeof window !== 'undefined' && window.localStorage.getItem(LS_ONBOARD) === 'true') ? 'auth' : 'welcome')
 
   // Where the user is in the three-step introduction; null hides the dots
-  const stepIndex = { welcome: 0, how: 1, signup: 2 }[stage] ?? null
+  const stepIndex = { welcome: 0, how: 1, auth: 2 }[stage] ?? null
 
   // Onboarding follows the device's light/dark automatically — no manual toggle.
   // The base background fills into the safe areas so the top and bottom edges
@@ -2870,15 +2803,15 @@ function OnboardingFlow({ theme, initialError, onClearInitialError }) {
           style={{ width: '100%', position: 'relative' }}>
           {stage === 'welcome' && (
             <WelcomeScreen isMobile={isMobile}
-              onStart={() => setStage('how')} onSignIn={() => setStage('signin')} />
+              onStart={() => setStage('how')} onSignIn={() => setStage('auth')} />
           )}
           {stage === 'how' && (
             <HowItWorksScreen isMobile={isMobile}
-              onContinue={() => setStage('signup')} onBack={() => setStage('welcome')} />
+              onContinue={() => setStage('auth')} onBack={() => setStage('welcome')} />
           )}
-          {(stage === 'signin' || stage === 'signup') && (
-            <AuthScreen mode={stage} onMode={setStage}
-              onBack={stage === 'signup' ? () => setStage('how') : undefined}
+          {stage === 'auth' && (
+            <AuthScreen
+              onBack={() => setStage('how')}
               initialError={initialError} onClearInitialError={onClearInitialError} />
           )}
         </motion.div>
