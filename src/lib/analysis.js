@@ -44,7 +44,13 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis) {
   /* Staggered rather than parallel. The main read has just spent most of the
    * account's 8,000 tokens-per-minute allowance, so firing both of these
    * immediately guarantees a rate-limit rejection and an empty goals panel.
-   * They're background enrichment — waiting is free, failing isn't. */
+   * They're background enrichment — waiting is free, failing isn't.
+   *
+   * Measured against the account: the main read is counted at ~5,840 tokens up
+   * front (prompt + max_tokens, with standings), and this first call adds ~2,083,
+   * so an immediate fire lands at ~7,923 inside the 8,000/min window. It fits,
+   * but with under 1% headroom — worth knowing before anything lengthens the
+   * main prompt. */
   const results = await Promise.allSettled(markets.map(async (market, i) => {
     if (i > 0) await new Promise(r => setTimeout(r, i * 25000))
     const res = await fetch(GROQ_ENDPOINT, {

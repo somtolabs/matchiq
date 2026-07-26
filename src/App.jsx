@@ -1317,7 +1317,7 @@ function MarketBar({ fixture: f }) {
   )
 }
 
-function MatchPreview({ fixture: f, onAnalyze }) {
+function MatchPreview({ fixture: f, onAnalyze, busy }) {
   const hasH2h = f.h2h?.matches?.length > 0
   return (
     <div style={{ marginTop: 36, display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -1356,7 +1356,7 @@ function MatchPreview({ fixture: f, onAnalyze }) {
 
       <Reveal delay={0.14}>
         <div style={{ textAlign: 'center', padding: '18px 0 4px' }}>
-          <Button onClick={onAnalyze} style={{ padding: '15px 34px', fontSize: 16, borderRadius: 999 }}>
+          <Button onClick={onAnalyze} disabled={busy} style={{ padding: '15px 34px', fontSize: 16, borderRadius: 999 }}>
             Read this match for me
           </Button>
           <div style={{ ...type.small, color: T.faint, marginTop: 14, maxWidth: 400, marginLeft: 'auto', marginRight: 'auto' }}>
@@ -1431,7 +1431,7 @@ function angleReads(data, fx) {
   return reads
 }
 
-function VerdictStory({ fixture: fx, data, onReRun }) {
+function VerdictStory({ fixture: fx, data, onReRun, busy }) {
   const r = data.recommendation || {}
   const conf = Math.round((r.confidence || 0) * 100)
   const modelPct = Math.round((r.model_probability || 0) * 100)
@@ -1787,7 +1787,7 @@ function VerdictStory({ fixture: fx, data, onReRun }) {
         <span style={{ ...type.small, color: T.faint }}>
           {analysedAt ? `Written ${analysedAt}` : 'From an earlier reading'}
         </span>
-        {onReRun && <Button kind="ghost" onClick={onReRun} style={{ padding: '8px 18px', fontSize: 13 }}>Read it again</Button>}
+        {onReRun && <Button kind="ghost" onClick={onReRun} disabled={busy} style={{ padding: '8px 18px', fontSize: 13 }}>Read it again</Button>}
       </div>
     </div>
   )
@@ -1843,9 +1843,9 @@ function MatchDetail({ fixture, data, loading, error, onBack, onRetry, onAnalyze
           <Button kind="soft" onClick={onRetry}>Try again</Button>
         </Card>
       ) : data ? (
-        <VerdictStory fixture={fixture} data={data} onReRun={onAnalyze} />
+        <VerdictStory fixture={fixture} data={data} onReRun={onAnalyze} busy={loading} />
       ) : (
-        <MatchPreview fixture={fixture} onAnalyze={onAnalyze} />
+        <MatchPreview fixture={fixture} onAnalyze={onAnalyze} busy={loading} />
       )}
     </div>
   )
@@ -4705,7 +4705,21 @@ function MatchIQ({ user, username, onUsernameChange }) {
     // No auto-fire — the user asks for the reading from the preview.
   }
 
+  /* Which fixture has a Groq read in flight, and which fixtures still have
+   * background goals-market calls pending. Refs, not state: the check has to be
+   * synchronous to be a real guard. `loading` is set with setState, so it isn't
+   * observable until React commits — two clicks dispatched in the same frame both
+   * saw loading === false and both fired a full analysis. Against a 200k/day
+   * token budget one stray double-tap costs about 5% of the day. */
+  const analysisInFlightRef = useRef(null)
+  const marketInFlightRef = useRef(new Set())
+
   async function runAnalysis(fx) {
+    if (analysisInFlightRef.current != null) {
+      console.warn(`[groq] analysis already in flight for fixture ${analysisInFlightRef.current} — ignoring duplicate trigger`)
+      return
+    }
+    analysisInFlightRef.current = fx.id
     setLoading(true); setError(null); setAnalysis(null)
     try {
       // Standings for this competition go into the prompt as the quality
@@ -4754,20 +4768,33 @@ function MatchIQ({ user, username, onUsernameChange }) {
       setStatus('analysis', 'operational')
       setHealth('analysis', { code: 200, msg: `OK · ${fx.homeTeam} vs ${fx.awayTeam}`, at: Date.now() })
 
-      // Fire multi-market in background (fire-and-forget)
-      runMultiMarketAnalysis(fx, parsed).then(multi => {
-        if (multi && multi.length) {
-          const enriched = { ...parsed, multiMarket: multi }
-          setAnalysis(a => a && a.fixtureId === fx.id ? enriched : a)
-          setAnalysisCache(prev => ({ ...prev, [fx.id]: enriched }))
-        }
-      }).catch(e => console.warn('multi-market failed:', e.message))
+      /* Fire multi-market in background (fire-and-forget). `loading` goes false
+       * as soon as the main read lands, so these two calls are still pending for
+       * the best part of a minute while the verdict is on screen and "Read it
+       * again" is live. Without this guard a re-run in that window stacked a
+       * second pair of goals-market calls on top of the first. */
+      if (!marketInFlightRef.current.has(fx.id)) {
+        marketInFlightRef.current.add(fx.id)
+        runMultiMarketAnalysis(fx, parsed).then(multi => {
+          if (multi && multi.length) {
+            const enriched = { ...parsed, multiMarket: multi }
+            setAnalysis(a => a && a.fixtureId === fx.id ? enriched : a)
+            setAnalysisCache(prev => ({ ...prev, [fx.id]: enriched }))
+          }
+        }).catch(e => console.warn('multi-market failed:', e.message))
+          .finally(() => { marketInFlightRef.current.delete(fx.id) })
+      } else {
+        console.warn(`[groq] goals-market calls already pending for fixture ${fx.id} — not duplicating`)
+      }
     } catch (e) {
       console.error('groq call failed:', e)
       setError(e.message || 'Analysis failed.')
       setStatus('analysis', 'degraded')
       setHealth('analysis', { code: null, msg: e.message || 'Groq call failed', at: Date.now() })
     } finally {
+      // No automatic retry: a failure surfaces the error card with a manual
+      // "Try again", so a bad response can never re-fire on its own.
+      analysisInFlightRef.current = null
       setLoading(false)
     }
   }
