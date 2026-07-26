@@ -6,8 +6,11 @@ export const ODDS_SPORTS = [
   'soccer_spain_la_liga',
   'soccer_germany_bundesliga',
   'soccer_italy_serie_a',
-  'soccer_france_ligue_1',
+  // The provider's key is `ligue_one`, not `ligue_1` — the old value isn't a
+  // real sport key and 404'd on every load.
+  'soccer_france_ligue_one',
   'soccer_uefa_champs_league',
+  'soccer_brazil_campeonato',
 ]
 
 /* football-data.org and the-odds-api name teams differently ("Brighton and Hove
