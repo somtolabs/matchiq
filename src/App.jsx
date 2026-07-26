@@ -2869,7 +2869,15 @@ function FollowingScreen({ fixtures, tracked, analysisCache, onOpen, onToggleTra
  * TRACK RECORD — honest accuracy
  * ============================================================ */
 
-function RecordScreen({ fixtures, analysisCache, agentPerf, onResolve, onOpen, verifiedRecord }) {
+/* Fewer than five settled predictions is not a record, it's noise — the same
+ * threshold the profile page already uses before it will print an accuracy
+ * figure. Below it, say so plainly rather than render a precise-looking number. */
+const MIN_SETTLED = 5
+
+function RecordScreen({
+  fixtures, analysisCache, onResolve, onOpen,
+  verifiedRecord, agentAccuracy, calibration,
+}) {
   const [openResolve, setOpenResolve] = useState(null)
 
   const entries = useMemo(() =>
@@ -2889,18 +2897,15 @@ function RecordScreen({ fixtures, analysisCache, agentPerf, onResolve, onOpen, v
   const edges = entries.map(e => e.a.recommendation?.value_edge || 0)
   const avgEdge = edges.length ? edges.reduce((s, x) => s + x, 0) / edges.length : 0
 
-  // Calibration — when we say X, how often are we right?
-  const buckets = [
-    { key: '50–60', min: 0.50, max: 0.60 }, { key: '60–70', min: 0.60, max: 0.70 },
-    { key: '70–80', min: 0.70, max: 0.80 }, { key: '80+', min: 0.80, max: 1.01 },
-  ].map(b => {
-    const picks = resolved.filter(e => {
-      const c = e.a.recommendation?.confidence || 0
-      return c >= b.min && c < b.max
-    })
-    const hit = picks.filter(e => e.a.correct).length
-    return { ...b, n: picks.length, rate: picks.length ? Math.round(hit / picks.length * 100) : null }
-  })
+  /* Calibration comes from the ledger via getCalibration(), not from
+   * analysisCache — the ledger is the permanent, server-side record and survives
+   * a cleared browser. Null until the query returns; empty until it has rows. */
+  const buckets = calibration || []
+  const settled = verifiedRecord?.count ?? 0
+  // Null means the query is still in flight — don't flash "0 of 5" at someone
+  // who actually has a record.
+  const ledgerLoading = verifiedRecord == null || calibration == null
+  const enoughSettled = !ledgerLoading && settled >= MIN_SETTLED
 
   const agents = [
     { key: 'form', label: 'Form', sub: 'recent results and momentum' },
@@ -2994,6 +2999,13 @@ function RecordScreen({ fixtures, analysisCache, agentPerf, onResolve, onOpen, v
           <div style={{ ...type.small, marginTop: 10 }}>
             When we say we're 70% sure, we should be right about 70% of the time. Here's how that's held up:
           </div>
+          {!enoughSettled ? (
+            <div style={{ ...type.small, color: T.faint, marginTop: 16 }}>
+              {ledgerLoading
+                ? 'Reading your ledger…'
+                : `Building a record — ${settled} of ${MIN_SETTLED} settled. This chart stays hidden until there's enough for it to mean anything.`}
+            </div>
+          ) : (
           <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
             {buckets.map(b => (
               <div key={b.key} style={{ display: 'grid', gridTemplateColumns: '110px 1fr 92px', gap: 12, alignItems: 'center' }}>
@@ -3013,22 +3025,22 @@ function RecordScreen({ fixtures, analysisCache, agentPerf, onResolve, onOpen, v
               </div>
             ))}
           </div>
-          {resolved.length < 3 && (
-            <div style={{ ...type.small, color: T.faint, marginTop: 14 }}>
-              This chart means very little until a handful of matches have settled.
-            </div>
           )}
         </Card>
       </Reveal>
 
-      {/* Agent scoreboard */}
+      {/* Agent scoreboard — from the ledger's prediction_agents rows */}
       <Reveal>
         <Card style={{ padding: 30, marginTop: 18 }}>
           <Eyebrow>Which of our three angles has been sharpest?</Eyebrow>
           <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 14 }}>
             {agents.map(row => {
-              const s = agentPerf[row.key] || { correct: 0, total: 0 }
-              const rate = s.total > 0 ? Math.round(s.correct / s.total * 100) : null
+              /* getAgentAccuracy() returns { correct, total, rate } per agent,
+               * counted server-side over resolved predictions with abstentions
+               * excluded. Each agent is held to the same five-settled threshold
+               * as the rest of the app before a percentage is shown. */
+              const s = agentAccuracy?.[row.key] || { correct: 0, total: 0, rate: null }
+              const rate = s.total >= MIN_SETTLED ? s.rate : null
               return (
                 <div key={row.key} style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline' }}>
                   <span style={{ ...type.small }}>
@@ -3037,7 +3049,9 @@ function RecordScreen({ fixtures, analysisCache, agentPerf, onResolve, onOpen, v
                   </span>
                   <span style={{ ...type.num, fontSize: 14, fontWeight: 600, flexShrink: 0,
                     color: rate == null ? T.faint : rate >= 60 ? T.good : rate >= 45 ? T.ink : T.bad }}>
-                    {rate == null ? 'no data yet' : `${rate}%`}
+                    {rate == null
+                      ? (agentAccuracy == null ? '—' : `Building a record · ${s.total}/${MIN_SETTLED}`)
+                      : `${rate}%`}
                     {rate != null && <span style={{ color: T.faint, fontWeight: 400 }}> · {s.correct}/{s.total}</span>}
                   </span>
                 </div>
@@ -4647,6 +4661,12 @@ function MatchIQ({ user, username, onUsernameChange }) {
   /* -------- prediction ledger: verified record read-back -------- */
   const ledger = usePredictionLedger(user)
   const [verifiedRecord, setVerifiedRecord] = useState(null)
+  /* Agent accuracy and calibration now come from the same Supabase ledger as the
+   * verified record, rather than from the localStorage figures derived off
+   * analysisCache. getAgentAccuracy and getCalibration were written when the
+   * ledger read layer was built but had no call site until now. */
+  const [agentAccuracy, setAgentAccuracy] = useState(null)
+  const [calibration, setCalibration] = useState(null)
   useEffect(() => {
     if (activeTab !== 'record') return
     let cancelled = false
@@ -4656,6 +4676,8 @@ function MatchIQ({ user, username, onUsernameChange }) {
       const correct = rows.filter(r => r.correct).length
       setVerifiedRecord({ count, correct, winRate: count ? Math.round((correct / count) * 100) : null })
     })
+    ledger.getAgentAccuracy().then(acc => { if (!cancelled) setAgentAccuracy(acc) })
+    ledger.getCalibration().then(b => { if (!cancelled) setCalibration(b) })
     return () => { cancelled = true }
   }, [activeTab, ledger])
 
@@ -5147,8 +5169,9 @@ function MatchIQ({ user, username, onUsernameChange }) {
     )
     if (activeTab === 'record') return (
       <RecordScreen fixtures={fixtures} analysisCache={analysisCache}
-        agentPerf={agentPerf} onResolve={resolveManual} onOpen={openFixture}
-        verifiedRecord={verifiedRecord} />
+        onResolve={resolveManual} onOpen={openFixture}
+        verifiedRecord={verifiedRecord}
+        agentAccuracy={agentAccuracy} calibration={calibration} />
     )
     if (activeTab === 'profile') return (
       <ProfileScreen user={user} analysisCache={analysisCache} isMobile={isMobile}
