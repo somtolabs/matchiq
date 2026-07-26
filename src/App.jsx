@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import {
   Sun, Moon, ChevronLeft, ChevronRight, X as XIcon, Check, Heart,
@@ -46,6 +46,11 @@ const T = {
   bg:        'var(--iq-bg)',
   card:      'var(--iq-card)',
   card2:     'var(--iq-card2)',
+  // Hover/press surfaces for interactive list rows — one step brighter than
+  // card2 in dark, one step darker in light, so the shift reads the same way in
+  // both themes without a row ever appearing to change elevation.
+  cardHover: 'var(--iq-cardHover)',
+  cardActive:'var(--iq-cardActive)',
   line:      'var(--iq-line)',
   lineHi:    'var(--iq-lineHi)',
   ink:       'var(--iq-ink)',
@@ -73,6 +78,8 @@ const LIGHT = {
   bg:        '#FAFAFA',
   card:      '#FFFFFF',
   card2:     '#F5F5F5',
+  cardHover: '#ECECEC',
+  cardActive:'#E2E2E2',
   line:      'rgba(0,0,0,0.06)',
   lineHi:    'rgba(0,0,0,0.14)',
   ink:       '#1A1A1A',
@@ -98,6 +105,8 @@ const DARK = {
   bg:        '#0A0A0A',
   card:      'rgba(255,255,255,0.04)',
   card2:     'rgba(255,255,255,0.06)',
+  cardHover: 'rgba(255,255,255,0.10)',
+  cardActive:'rgba(255,255,255,0.14)',
   line:      'rgba(255,255,255,0.08)',
   lineHi:    'rgba(255,255,255,0.12)',
   ink:       '#F5F5F5',
@@ -254,6 +263,8 @@ function GlobalStyles() {
         [data-theme="dark"] {
           --iq-card: rgba(255,255,255,0.14);
           --iq-card2: rgba(255,255,255,0.16);
+          --iq-cardHover: rgba(255,255,255,0.20);
+          --iq-cardActive: rgba(255,255,255,0.24);
         }
         [data-theme="dark"] .iq-glass,
         [data-theme="dark"] .iq-bar { background: rgba(255, 255, 255, 0.14) !important; }
@@ -299,6 +310,18 @@ function GlobalStyles() {
       .iq-lift { transition: transform 260ms ${T.ease}, box-shadow 260ms ${T.ease}; }
       .iq-lift:hover { transform: translateY(-2px); box-shadow: ${T.shadowLg}; }
       .iq-lift:active { transform: translateY(0); }
+
+      /* Interactive list row: a background shift rather than the lift used by
+         cards, so a dense stack of rows doesn't jitter on hover. */
+      .iq-row {
+        transition: background 180ms ${T.ease}, border-color 180ms ${T.ease};
+        cursor: pointer;
+      }
+      .iq-row:hover { background: ${T.cardHover} !important; border-color: ${T.lineHi} !important; }
+      .iq-row:active { background: ${T.cardActive} !important; }
+      .iq-row:focus-visible {
+        outline: 2px solid ${T.accent}; outline-offset: 2px;
+      }
 
       details.iq-fold > summary { list-style: none; cursor: pointer; }
       details.iq-fold > summary::-webkit-details-marker { display: none; }
@@ -501,39 +524,160 @@ function Eyebrow({ children, style }) {
   return <div style={{ ...type.eyebrow, ...style }}>{children}</div>
 }
 
+/* One opener, provided once at the top of the app, so a headline behaves
+ * identically wherever it appears. Without this the homepage strip and the
+ * verdict screen would each need their own modal and would drift apart. */
+const ArticleViewer = createContext(null)
+
 /* One news row, and one list — shared by the homepage strip and the Recent
  * Headlines section on a verdict, so there is a single implementation of how an
  * article looks. Real source, real relative time from the article's own
- * publishedAt, real outbound link using the app's existing external-link pattern.
- * Never renders a placeholder: callers decide not to render at all. */
+ * publishedAt, real description when the API supplied one.
+ *
+ * A row is a button, not a link: tapping opens the in-app detail step first, and
+ * the outbound link lives in there. Never renders a placeholder — callers decide
+ * not to render at all. */
 function NewsRow({ article, label }) {
-  const inner = (
-    <>
-      <div style={{ ...type.small, color: T.ink, fontWeight: 560, lineHeight: 1.4 }}>
+  const open = useContext(ArticleViewer)
+  return (
+    <button
+      type="button"
+      className="iq-row"
+      onClick={() => open?.(article, label)}
+      style={{
+        display: 'block', width: '100%', textAlign: 'left',
+        background: T.card2, border: `1px solid transparent`,
+        borderRadius: 14, padding: '15px 17px', color: T.ink,
+        font: 'inherit',
+      }}>
+      <div style={{ ...type.small, color: T.ink, fontWeight: 560, lineHeight: 1.45, fontSize: 14.5 }}>
         {article.title}
       </div>
-      <div style={{ ...type.small, color: T.faint, marginTop: 5, fontSize: 12.5 }}>
+      {/* Two lines at most: enough to tell whether the story is worth opening,
+          not so much that the section turns into a wall of text. Articles
+          without a description simply skip this. */}
+      {article.description && (
+        <div style={{
+          ...type.small, color: T.sub, marginTop: 7, lineHeight: 1.5,
+          display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+          overflow: 'hidden',
+        }}>
+          {article.description}
+        </div>
+      )}
+      <div style={{ ...type.small, color: T.faint, marginTop: 9, fontSize: 12.5 }}>
         {label ? `${label} · ` : ''}{article.source} · {relativeTime(article.publishedAt)}
       </div>
-    </>
+    </button>
   )
-  const boxStyle = {
-    display: 'block', textDecoration: 'none', background: T.card2,
-    borderRadius: 14, padding: '13px 16px', color: T.ink,
-  }
-  // Only a real URL becomes a link; an article without one still renders honestly.
-  return article.url
-    ? <a href={article.url} target="_blank" rel="noopener noreferrer" className="iq-lift" style={boxStyle}>{inner}</a>
-    : <div style={boxStyle}>{inner}</div>
 }
 
 function NewsList({ items }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 16 }}>
       {items.map((it, i) => (
         <NewsRow key={`${it.article.url || it.article.title}-${i}`} article={it.article} label={it.label} />
       ))}
     </div>
+  )
+}
+
+/* The in-app detail step. Everything shown here is already on the article object
+ * fetched during the previous sprint's cached calls — opening this makes no
+ * request of any kind.
+ *
+ * The description is genuinely nullable and NewsAPI truncates it near 200
+ * characters, so it is omitted entirely when absent rather than leaving a gap,
+ * and the outbound action is always present either way. */
+function NewsDetailModal({ article, label, onClose }) {
+  const reduce = useReducedMotion()
+
+  // Escape to dismiss, and the page behind must not scroll under the overlay.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [onClose])
+
+  if (!article) return null
+
+  return (
+    <motion.div
+      onClick={onClose}
+      initial={reduce ? false : { opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={reduce ? undefined : { opacity: 0 }}
+      transition={{ duration: 0.18 }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 300,
+        background: 'rgba(0,0,0,0.55)',
+        backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: 20,
+      }}>
+      <motion.div
+        role="dialog"
+        aria-modal="true"
+        aria-label={article.title}
+        onClick={(e) => e.stopPropagation()}
+        initial={reduce ? false : { opacity: 0, y: 14, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={reduce ? undefined : { opacity: 0, y: 8, scale: 0.99 }}
+        transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+        className="iq-glass"
+        style={{
+          background: T.card, border: `1px solid ${T.line}`, boxShadow: T.shadowLg,
+          borderRadius: 22, padding: 28, width: '100%', maxWidth: 520,
+          maxHeight: '82dvh', overflowY: 'auto',
+        }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 14 }}>
+          <Eyebrow>{label || 'Headline'}</Eyebrow>
+          <button type="button" onClick={onClose} aria-label="Close" style={{
+            background: 'transparent', border: 'none', color: T.faint,
+            cursor: 'pointer', padding: 2, lineHeight: 0, marginTop: -2,
+          }}><XIcon size={18} /></button>
+        </div>
+
+        <h2 style={{ ...type.title, fontSize: 21, color: T.ink, margin: '14px 0 0', lineHeight: 1.3 }}>
+          {article.title}
+        </h2>
+
+        <div style={{ ...type.small, color: T.faint, marginTop: 10, fontSize: 13 }}>
+          {article.source} · {relativeTime(article.publishedAt)}
+        </div>
+
+        {article.description && (
+          <p style={{ ...type.body, fontSize: 15.5, color: T.sub, marginTop: 18, lineHeight: 1.6 }}>
+            {article.description}
+          </p>
+        )}
+
+        <div style={{ marginTop: 24 }}>
+          {article.url ? (
+            <a href={article.url} target="_blank" rel="noopener noreferrer"
+              className="iq-lift"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+                background: T.accent, color: T.accentInk, boxShadow: T.glow,
+                borderRadius: 999, padding: '11px 22px', textDecoration: 'none',
+                fontFamily: T.sans, fontSize: 14.5, fontWeight: 560,
+              }}>
+              Read full article <ArrowUpRight size={16} />
+            </a>
+          ) : (
+            // Honest rather than a dead button: NewsAPI occasionally omits the URL.
+            <div style={{ ...type.small, color: T.faint }}>
+              This source didn't provide a link to the full article.
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
   )
 }
 
@@ -970,7 +1114,17 @@ function NewsStrip({ articles }) {
   return (
     <Reveal delay={0.06}>
       <Card style={{ padding: 28, marginTop: 26 }}>
-        <Eyebrow>Around football</Eyebrow>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <Eyebrow>Football news</Eyebrow>
+            <h2 style={{ ...type.title, fontSize: 21, color: T.ink, margin: '10px 0 0' }}>
+              Latest headlines
+            </h2>
+          </div>
+          <span style={{ ...type.small, color: T.faint, fontSize: 12.5 }}>
+            {articles.length} {articles.length === 1 ? 'story' : 'stories'}
+          </span>
+        </div>
         <NewsList items={articles.map(a => ({ article: a }))} />
       </Card>
     </Reveal>
@@ -5013,7 +5167,19 @@ function MatchIQ({ user, username, onUsernameChange }) {
 
   const screenKey = center ? `center-${center.id}` : selected ? `match-${selected.id}` : activeTab
 
+  /* One modal instance for the whole app, opened through context. Both the
+   * homepage strip and a verdict's Recent Headlines hand the same article object
+   * to the same viewer, so the two placements cannot drift apart — and nothing
+   * is fetched when a headline is tapped, because everything shown is already on
+   * the object the previous sprint's cached calls produced. */
+  const [openArticle, setOpenArticle] = useState(null)
+  const showArticle = useMemo(
+    () => (article, label) => setOpenArticle({ article, label }),
+    [],
+  )
+
   return (
+    <ArticleViewer.Provider value={showArticle}>
     <div data-theme={theme} style={{ minHeight: '100dvh', position: 'relative', zIndex: 1 }}>
       <GlobalStyles />
       <Header theme={theme} onToggleTheme={toggleTheme}
@@ -5036,6 +5202,17 @@ function MatchIQ({ user, username, onUsernameChange }) {
         apiHealth={apiHealth} open={diagOpen} onToggle={() => setDiagOpen(o => !o)}
         onRetryFootball={() => loadFixtures()} onRetryOdds={() => loadOdds(fixtures, { force: true })}
       />
+      <AnimatePresence>
+        {openArticle && (
+          <NewsDetailModal
+            key="news-detail"
+            article={openArticle.article}
+            label={openArticle.label}
+            onClose={() => setOpenArticle(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
+    </ArticleViewer.Provider>
   )
 }

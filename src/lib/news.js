@@ -97,12 +97,20 @@ function shapeArticle(a) {
   // NewsAPI marks pulled articles this way; rendering them would be showing
   // something that no longer exists.
   if (a.title === '[Removed]') return null
+  /* `description` is a real field on every NewsAPI article object (confirmed
+   * against live responses: source, author, title, description, url, urlToImage,
+   * publishedAt, content). It is already in the payload we fetch, so keeping it
+   * costs nothing — no extra request, no extra quota. It is genuinely nullable
+   * and NewsAPI truncates it around 200 characters, so callers must treat it as
+   * optional and must never present it as the full article. */
+  const description = typeof a.description === 'string' ? a.description.trim() : ''
   return {
     // Some sources ship a leading space in the headline.
     title: a.title.trim(),
     source: a.source?.name || 'Unknown source',
     url: a.url || null,
     publishedAt: a.publishedAt,
+    description: description && description !== '[Removed]' ? description : null,
   }
 }
 
