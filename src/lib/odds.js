@@ -1,17 +1,82 @@
-/* Odds API — sport keys and fixture↔event matching. */
+/* Odds API — sport keys, request planning, response cache, fixture↔event matching. */
 
-export const ODDS_SPORTS = [
-  'soccer_fifa_world_cup',
-  'soccer_epl',
-  'soccer_spain_la_liga',
-  'soccer_germany_bundesliga',
-  'soccer_italy_serie_a',
-  // The provider's key is `ligue_one`, not `ligue_1` — the old value isn't a
-  // real sport key and 404'd on every load.
-  'soccer_france_ligue_one',
-  'soccer_uefa_champs_league',
-  'soccer_brazil_campeonato',
-]
+import { LS_ODDS_CACHE, readJSON, writeJSON } from './storage.js'
+
+/* football-data.org competition code → the-odds-api sport key.
+ *
+ * Keyed by competition rather than held as a flat list so the app can ask "which
+ * sport keys do today's fixtures actually need?" — previously every key here was
+ * requested on every mount, burning quota on competitions with nothing playing.
+ *
+ * Note the provider's Ligue 1 key is `ligue_one`, not `ligue_1`; the latter isn't
+ * a real sport key and 404'd on every load. */
+export const ODDS_SPORTS = {
+  WC:  'soccer_fifa_world_cup',
+  PL:  'soccer_epl',
+  PD:  'soccer_spain_la_liga',
+  BL1: 'soccer_germany_bundesliga',
+  SA:  'soccer_italy_serie_a',
+  FL1: 'soccer_france_ligue_one',
+  CL:  'soccer_uefa_champs_league',
+  BSA: 'soccer_brazil_campeonato',
+}
+
+/* The sport keys a given fixture list genuinely needs, deduped. A competition
+ * with no fixtures loaded contributes nothing, so nothing is requested for it. */
+export function sportKeysForFixtures(fixtures) {
+  const keys = new Set()
+  for (const f of fixtures || []) {
+    const key = ODDS_SPORTS[f?.competitionCode]
+    if (key) keys.add(key)
+  }
+  return [...keys]
+}
+
+/* Pre-match prices don't move fast enough to justify refetching on every mount.
+ * Twelve minutes is deliberately conservative — long enough that a reload, a tab
+ * switch or a nav back to the list costs nothing, short enough that a line that
+ * genuinely moves before kick-off is picked up well within the hour. */
+export const ODDS_TTL_MS = 12 * 60 * 1000
+
+/* Cached per sport key, not as one blob, so a day with two competitions can
+ * reuse one and refresh the other independently. Persisted because the redundant
+ * fetch this is preventing is exactly the one a page reload used to trigger. */
+export function readOddsStore() {
+  const raw = readJSON(LS_ODDS_CACHE, {})
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+}
+
+export function writeOddsStore(store) {
+  writeJSON(LS_ODDS_CACHE, store)
+}
+
+export function isFresh(entry, now = Date.now()) {
+  return !!entry && typeof entry.at === 'number' && (now - entry.at) < ODDS_TTL_MS
+}
+
+/* Splits the keys a load needs into those already covered by a live cache entry
+ * and those that have to go to the network. `force` bypasses the cache entirely,
+ * which is what the diagnostic panel's retry button is for. */
+export function planOddsFetch(keys, store, { force = false, now = Date.now() } = {}) {
+  const cached = []
+  const toFetch = []
+  for (const key of keys) {
+    if (!force && isFresh(store[key], now)) cached.push(key)
+    else toFetch.push(key)
+  }
+  return { cached, toFetch }
+}
+
+/* Every event across the keys this load cares about — cache hits and fresh
+ * fetches alike — flattened into the single array the matcher consumes. */
+export function eventsForKeys(keys, store) {
+  const flat = []
+  for (const key of keys) {
+    const entry = store[key]
+    if (Array.isArray(entry?.events)) flat.push(...entry.events)
+  }
+  return flat
+}
 
 /* Accents fold away and punctuation becomes a separator, so "São Paulo FC",
  * "Sao Paulo" and "Bragantino-SP" all reduce to comparable words. */

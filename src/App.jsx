@@ -16,7 +16,10 @@ import {
   calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve,
   edgeToOutcome, AGENT_PERF_EMPTY,
 } from './lib/analysis.js'
-import { ODDS_SPORTS, lookupOddsForFixture } from './lib/odds.js'
+import {
+  lookupOddsForFixture, sportKeysForFixtures, readOddsStore, writeOddsStore,
+  planOddsFetch, eventsForKeys,
+} from './lib/odds.js'
 import { useApiHealth } from './hooks/useApiHealth.js'
 import { useFixtures } from './hooks/useFixtures.js'
 import { authConfigured } from './lib/supabase.js'
@@ -4220,6 +4223,10 @@ function MatchIQ({ user, username, onUsernameChange }) {
   const [oddsCache, setOddsCache] = useState([])
   const [oddsUpdatedAt, setOddsUpdatedAt] = useState(null)
   const [oddsQuotaRemaining, setOddsQuotaRemaining] = useState(null)
+  /* Raw Odds API responses keyed by sport key, with fetch timestamps. A ref, not
+   * state: reading it must never itself schedule a render, and it is restored
+   * from localStorage so a reload inside the TTL spends no quota. */
+  const oddsStoreRef = useRef(readOddsStore())
 
   const [standingsCache, setStandingsCache] = useState({})
   const [scorersCache, setScorersCache] = useState({})
@@ -4361,14 +4368,51 @@ function MatchIQ({ user, username, onUsernameChange }) {
     loadCompetitionData(fixtures)
   }, [fixtures])
 
-  /* -------- odds -------- */
-  async function loadOdds() {
+  /* -------- odds --------
+   * Two things keep this off the quota. Only the sport keys that today's real
+   * fixtures actually belong to are requested — every key in the table used to
+   * be fetched on every mount, so competitions with nothing playing were paid
+   * for daily. And each key's response is cached for ODDS_TTL_MS and persisted,
+   * so a reload, a tab switch or a second mount inside that window costs zero
+   * requests. `force` is the diagnostic panel's retry, which must ignore both. */
+  async function loadOdds(fixturesList, { force = false } = {}) {
+    const keys = sportKeysForFixtures(fixturesList)
+    if (!keys.length) {
+      // Honest, not silent: the competitions on today's card have no odds
+      // coverage in the mapping table, so there is nothing to request.
+      const codes = [...new Set((fixturesList || []).map(f => f.competitionCode).filter(Boolean))]
+      setOddsCache([])
+      setStatus('odds', 'degraded')
+      setHealth('odds', {
+        code: null,
+        msg: codes.length ? `No odds coverage for ${codes.join(', ')}` : 'No fixtures loaded yet',
+        count: 0, at: Date.now(), remaining: oddsQuotaRemaining,
+      })
+      return
+    }
+
+    const store = { ...oddsStoreRef.current }
+    const { cached, toFetch } = planOddsFetch(keys, store, { force })
+    console.log(`[odds-api] needed: ${keys.join(', ')} · cached: ${cached.length ? cached.join(', ') : 'none'} · fetching: ${toFetch.length ? toFetch.join(', ') : 'none'}`)
+
+    if (!toFetch.length) {
+      const flat = eventsForKeys(keys, store)
+      setOddsCache(flat)
+      setStatus('odds', flat.length > 0 ? 'operational' : 'degraded')
+      setHealth('odds', {
+        code: 200,
+        msg: `Cached · ${flat.length} events · ${keys.length} of ${keys.length} keys from cache`,
+        count: flat.length, at: Date.now(), remaining: oddsQuotaRemaining,
+      })
+      return
+    }
+
     try {
       let lastRemaining = null
       let lastCode = null
       let lastMsg = null
-      const results = await Promise.allSettled(
-        ODDS_SPORTS.map(async (sport) => {
+      await Promise.allSettled(
+        toFetch.map(async (sport) => {
           // Same trailing-slash trap as the football team-matches call: the
           // vercel.json rewrite doesn't match `/odds/?…`, so this 404'd in
           // production and left the odds cache empty on every load.
@@ -4383,14 +4427,18 @@ function MatchIQ({ user, username, onUsernameChange }) {
               const errBody = await res.json()
               lastMsg = errBody?.message || `HTTP ${res.status}`
             } catch { lastMsg = `HTTP ${res.status}` }
-            return []
+            // Deliberately not cached: a failure must be retried on the next
+            // load rather than locked in for the length of the TTL.
+            return
           }
           const data = await res.json()
-          return Array.isArray(data) ? data : []
+          store[sport] = { at: Date.now(), events: Array.isArray(data) ? data : [] }
         })
       )
-      const flat = []
-      results.forEach(r => { if (r.status === 'fulfilled') flat.push(...r.value) })
+      oddsStoreRef.current = store
+      writeOddsStore(store)
+
+      const flat = eventsForKeys(keys, store)
       console.log('odds cache size:', flat.length)
       if (lastRemaining != null) setOddsQuotaRemaining(lastRemaining)
       setOddsCache(flat)
@@ -4399,10 +4447,12 @@ function MatchIQ({ user, username, onUsernameChange }) {
       setStatus('odds', healthy ? 'operational' : 'degraded')
       setHealth('odds', {
         code: lastCode,
-        msg: healthy ? `OK · ${flat.length} events` : (lastMsg || 'No events returned'),
+        msg: healthy
+          ? `OK · ${flat.length} events · ${toFetch.length} requested, ${cached.length} cached`
+          : (lastMsg || 'No events returned'),
         count: flat.length,
         at: Date.now(),
-        remaining: lastRemaining,
+        remaining: lastRemaining ?? oddsQuotaRemaining,
       })
     } catch (err) {
       console.error('odds fetch failed:', err)
@@ -4442,8 +4492,24 @@ function MatchIQ({ user, username, onUsernameChange }) {
 
   useEffect(() => {
     loadFixtures()
-    loadOdds()
   }, [])
+
+  /* -------- odds trigger --------
+   * Odds can only be requested once we know which competitions are actually
+   * playing, so this waits on the fixture list rather than firing on mount.
+   * Keyed on the sport keys themselves: form enrichment and the status refresh
+   * both replace the `fixtures` array without changing which competitions are
+   * on the card, and neither should cost a request. */
+  // null, not '': a fixture list with no mapped competition produces an empty
+  // key, and that case still needs one pass through loadOdds to report itself.
+  const oddsKeysRef = useRef(null)
+  useEffect(() => {
+    if (!fixtures.length) return
+    const key = sportKeysForFixtures(fixtures).sort().join(',')
+    if (key === oddsKeysRef.current) return
+    oddsKeysRef.current = key
+    loadOdds(fixtures)
+  }, [fixtures])
 
   /* -------- keeping status honest over time --------
    * The mount fetch is only a snapshot. Without this the app happily shows a
@@ -4740,7 +4806,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
       {isMobile && <MobileNav tab={activeTab} onTab={switchTab} />}
       <DiagnosticPanel
         apiHealth={apiHealth} open={diagOpen} onToggle={() => setDiagOpen(o => !o)}
-        onRetryFootball={() => loadFixtures()} onRetryOdds={() => loadOdds()}
+        onRetryFootball={() => loadFixtures()} onRetryOdds={() => loadOdds(fixtures, { force: true })}
       />
     </div>
   )
