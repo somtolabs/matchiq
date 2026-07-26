@@ -24,6 +24,10 @@ export default async function handler(req, res) {
   const key = process.env.NEWS_API_KEY || ''
   if (!key) {
     // Honest and specific: an absent key is a deployment problem, not "no news".
+    // Explicitly uncacheable — Vercel's default for a function response is
+    // `public, max-age=0, must-revalidate`, and letting a CDN hold this would
+    // mean adding the key to the dashboard appeared to do nothing.
+    res.setHeader('Cache-Control', 'no-store')
     return res.status(503).json({
       status: 'error',
       code: 'apiKeyMissing',
