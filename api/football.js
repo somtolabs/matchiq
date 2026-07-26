@@ -29,6 +29,21 @@ export default async function handler(req, res) {
       },
     })
 
+    // Forward whatever rate-limit signal upstream gives us, and expose it to the
+    // browser — without this a 429 was only visible as a status code with no
+    // indication of how long to wait.
+    for (const h of ['X-Requests-Available-Minute', 'X-RequestCounter-Reset', 'Retry-After']) {
+      const v = upstream.headers.get(h)
+      if (v) res.setHeader(h, v)
+    }
+    res.setHeader(
+      'Access-Control-Expose-Headers',
+      'X-Requests-Available-Minute, X-RequestCounter-Reset, Retry-After',
+    )
+    if (upstream.status === 429) {
+      console.warn(`[football fn] 429 from upstream on ${rawPath}`)
+    }
+
     const ct = upstream.headers.get('content-type') || ''
     const text = await upstream.text()
     if (ct.includes('application/json')) res.setHeader('Content-Type', 'application/json')

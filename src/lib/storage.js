@@ -15,6 +15,20 @@ export const LS_ODDS_HIST  = 'matchiq_odds_history'
  * so a page reload inside the TTL costs no quota — reloads were the single
  * biggest source of redundant requests. */
 export const LS_ODDS_CACHE = 'matchiq_odds_cache'
+/* football-data responses, so a refresh inside the window costs no requests
+ * against the 10/min limit. Fixtures carry live scores so they expire quickly;
+ * form and standings only change when a match finishes, so they last hours. */
+export const LS_FIXTURES_CACHE = 'matchiq_fixtures_cache'
+export const LS_FORM_CACHE     = 'matchiq_form_cache'
+export const LS_COMP_CACHE     = 'matchiq_comp_cache'
+
+export const FIXTURES_TTL_MS = 3 * 60 * 1000
+export const FORM_TTL_MS     = 6 * 60 * 60 * 1000
+export const COMP_TTL_MS     = 6 * 60 * 60 * 1000
+
+export function cacheFresh(entry, ttl, now = Date.now()) {
+  return !!entry && typeof entry.at === 'number' && (now - entry.at) < ttl
+}
 
 export const delay = (ms) => new Promise(r => setTimeout(r, ms))
 

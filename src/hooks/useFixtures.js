@@ -1,6 +1,22 @@
-import { useState } from 'react'
-import { delay } from '../lib/storage.js'
-import { mapMatch, formDetailForTeam } from '../lib/football.js'
+import { useState, useEffect, useRef } from 'react'
+import {
+  readJSON, writeJSON, cacheFresh,
+  LS_FIXTURES_CACHE, LS_FORM_CACHE, FIXTURES_TTL_MS, FORM_TTL_MS,
+} from '../lib/storage.js'
+import {
+  mapMatch, formDetailForTeam, footballFetch, onFootballRateLimit, footballBlockedMs,
+  FOOTBALL_RATE_LIMIT,
+} from '../lib/football.js'
+
+/* A throttled fixture-list call used to return [] and render as "nothing on
+ * today's slate". Thrown instead so loadFixtures can report it honestly. Module
+ * scope, so `instanceof` holds across renders. */
+class RateLimited extends Error {
+  constructor(waitMs) {
+    super('Rate limited by football-data.org')
+    this.waitMs = waitMs
+  }
+}
 
 /* Fixture loading + team form enrichment + head-to-head on selection.
  *
@@ -16,12 +32,20 @@ export function useFixtures({ setStatus, setHealth }) {
   const [fixturesLoading, setFixturesLoading] = useState(true)
   const [fixturesError, setFixturesError] = useState(null)
   const [h2hCache, setH2hCache] = useState({})
+  /* Non-zero while upstream has told us to wait. Distinct from fixturesError:
+   * this is temporary and self-healing, and the UI says so. */
+  const [rateLimitedUntil, setRateLimitedUntil] = useState(0)
+  /* True only when the fixture-list call itself was throttled — that is the one
+   * case worth auto-retrying, and the one that produced the empty state. */
+  const [listRateLimited, setListRateLimited] = useState(false)
+  /* When the list last came off the network (not the cache) — lets App.jsx skip
+   * the mount status-refresh that would otherwise duplicate the call. */
+  const [fixturesFetchedAt, setFixturesFetchedAt] = useState(0)
 
   async function fetchRange(fromStr, toStr) {
-    const url = `/api/football/v4/matches?dateFrom=${fromStr}&dateTo=${toStr}`
     let res
     try {
-      res = await fetch(url)
+      res = await footballFetch(`v4/matches?dateFrom=${fromStr}&dateTo=${toStr}`)
     } catch (e) {
       setHealth('football', { code: null, msg: `Network: ${e.message}`, count: null, at: Date.now() })
       throw new Error(`Network failure — proxy or dev server unreachable (${e.message})`)
@@ -31,17 +55,26 @@ export function useFixtures({ setStatus, setHealth }) {
       throw new Error('API key rejected — verify FOOTBALL_API_KEY in Vercel env (or .env locally) is active.')
     }
     if (res.status === 429) {
-      setHealth('football', { code: 429, msg: 'Rate limited (10 req/min free tier)', count: null, at: Date.now() })
-      return []
+      const waitMs = footballBlockedMs() || 60000
+      setHealth('football', {
+        code: 429,
+        msg: `Rate limited (${FOOTBALL_RATE_LIMIT + 1}/min plan) — retrying in ${Math.ceil(waitMs / 1000)}s`,
+        count: null, at: Date.now(),
+      })
+      throw new RateLimited(waitMs)
     }
     if (!res.ok) {
       setHealth('football', { code: res.status, msg: `HTTP ${res.status}`, count: null, at: Date.now() })
       return []
     }
     const data = await res.json()
-    const matches = (data.matches || []).map(mapMatch).filter(Boolean)
+    /* The RAW items are what gets cached, never the mapped fixtures: mapMatch
+     * computes "Tomorrow" and the kickoff label relative to now, and a Date
+     * survives JSON as a string. Re-mapping on read keeps both honest. */
+    const raw = data.matches || []
+    const matches = raw.map(mapMatch).filter(Boolean)
     setHealth('football', { code: 200, msg: `OK · ${fromStr} → ${toStr}`, count: matches.length, at: Date.now() })
-    return matches
+    return { raw, matches }
   }
 
   async function fetchDay(dateStr) {
@@ -54,23 +87,55 @@ export function useFixtures({ setStatus, setHealth }) {
     return fetchRange(from.toISOString().split('T')[0], to.toISOString().split('T')[0])
   }
 
-  async function loadFixtures(useWeekWindow = false) {
+  /* Refreshing repeatedly was the reported failure: each refresh re-fired the
+   * whole load — list, three competition calls and one per team for form — from
+   * scratch, ~18 calls against a 10/min limit, so the second refresh inside a
+   * minute got 429s. Serving a recent list from cache makes a refresh free. */
+  async function loadFixtures(useWeekWindow = false, { force = false } = {}) {
     setFixturesLoading(true); setFixturesError(null)
 
     const today = new Date().toISOString().split('T')[0]
+    const cacheKey = useWeekWindow ? `window:${today}` : `day:${today}`
 
-    // API key is now server-side in /api/football/[...path].js
-    // No client-side key check needed.
+    if (!force) {
+      const cached = readJSON(LS_FIXTURES_CACHE, null)
+      if (cached?.key === cacheKey && cacheFresh(cached, FIXTURES_TTL_MS) && Array.isArray(cached.raw)) {
+        const matches = cached.raw.map(mapMatch).filter(Boolean)
+        setFixtures(matches)
+        setStatus('football', 'operational')
+        setRateLimitedUntil(0)
+        setHealth('football', {
+          code: 200,
+          msg: `Cached · ${matches.length} fixtures · ${Math.round((Date.now() - cached.at) / 1000)}s old`,
+          count: matches.length, at: Date.now(),
+        })
+        setFixturesLoading(false)
+        loadTeamForms(matches.slice(0, 10))
+        return
+      }
+    }
 
     try {
-      let all = await fetchDay(today)
-      if (all.length === 0 && !useWeekWindow) {
-        all = await loadFixturesWindow()
+      let { raw, matches } = await fetchDay(today)
+      if (matches.length === 0 && !useWeekWindow) {
+        ({ raw, matches } = await loadFixturesWindow())
       }
-      setFixtures(all)
+      writeJSON(LS_FIXTURES_CACHE, { at: Date.now(), key: cacheKey, raw })
+      setFixtures(matches)
+      setFixturesFetchedAt(Date.now())
       setStatus('football', 'operational')
-      loadTeamForms(all.slice(0, 10))
+      setRateLimitedUntil(0)
+      loadTeamForms(matches.slice(0, 10))
     } catch (err) {
+      if (err instanceof RateLimited) {
+        /* Honest and temporary. Anything already cached stays on screen rather
+         * than being replaced by an empty list, and the retry is automatic. */
+        setRateLimitedUntil(Date.now() + err.waitMs)
+        setListRateLimited(true)
+        setStatus('football', 'degraded')
+        setFixturesLoading(false)
+        return
+      }
       const msg = /disabled|forbidden|401|403/i.test(err.message || '')
         ? 'API key rejected — verify FOOTBALL_API_KEY in Vercel env (or .env locally) is active.'
         : err.message || 'Unknown error loading fixtures'
@@ -81,22 +146,65 @@ export function useFixtures({ setStatus, setHealth }) {
     }
   }
 
+  /* Automatic recovery: when the hold expires, try again once, unprompted. The
+   * user never has to refresh to get out of a rate-limited state. */
+  const loadRef = useRef(loadFixtures)
+  loadRef.current = loadFixtures
+  useEffect(() => {
+    // Only the list call retries. A throttled form call must not trigger a whole
+    // reload — that is how a retry loop starts.
+    if (!listRateLimited || !rateLimitedUntil) return
+    const ms = Math.max(0, rateLimitedUntil - Date.now()) + 500
+    const t = setTimeout(() => {
+      setListRateLimited(false)
+      loadRef.current(false, { force: true })
+    }, ms)
+    return () => clearTimeout(t)
+  }, [listRateLimited, rateLimitedUntil])
+
+  /* A 429 raised by any other call — form, standings, H2H — should surface in the
+   * same honest state rather than passing silently. */
+  useEffect(() => onFootballRateLimit(({ waitMs }) => {
+    setRateLimitedUntil(prev => Math.max(prev, Date.now() + waitMs))
+  }), [])
+
+  /* One request per team, which is what football-data offers — the competition
+   * -wide alternative returns league matches only, and this feed deliberately
+   * includes cup form, which the prompt reads. So the saving comes from caching
+   * rather than batching: a team's last five finished matches only change when
+   * that team plays again, so six hours is honest and a refresh costs nothing. */
   async function loadTeamForms(fixtures) {
     const teamIds = [...new Set(fixtures.flatMap(f => [f.homeTeamId, f.awayTeamId]))]
       .filter(Boolean)
       .slice(0, 20)
 
+    const store = readJSON(LS_FORM_CACHE, {}) || {}
     const formMap = {}
     const detailMap = {}
+    const stale = []
     for (const teamId of teamIds) {
-      await delay(300)
+      const entry = store[teamId]
+      if (cacheFresh(entry, FORM_TTL_MS) && Array.isArray(entry.detail)) {
+        detailMap[teamId] = entry.detail
+        formMap[teamId] = entry.detail.map(d => d.result)
+      } else {
+        stale.push(teamId)
+      }
+    }
+    console.log(`[football-api] form: ${teamIds.length} teams · ${teamIds.length - stale.length} cached · ${stale.length} to fetch`)
+
+    // Apply the cached half immediately so form is on screen without waiting on
+    // the network for the rest.
+    if (Object.keys(formMap).length) applyForms(formMap, detailMap)
+
+    for (const teamId of stale) {
       try {
         // No trailing slash before the query: vercel.json rewrites
         // `/api/football/:path*`, and `:path*` does not match a trailing
         // slash, so `.../matches/?status=…` 404s in production. That silently
         // emptied homeForm/awayForm for every fixture on the deployed site —
         // the prompt has been reading "Not available" for form all along.
-        const res = await fetch(`/api/football/v4/teams/${teamId}/matches?status=FINISHED&limit=5`)
+        const res = await footballFetch(`v4/teams/${teamId}/matches?status=FINISHED&limit=5`)
         if (!res.ok) continue
         const data = await res.json()
         const matches = data.matches || []
@@ -108,8 +216,16 @@ export function useFixtures({ setStatus, setHealth }) {
           .filter(Boolean)
         detailMap[teamId] = detail
         formMap[teamId] = detail.map(d => d.result)
+        // Banked per team, so a throttle or a closed tab part-way through keeps
+        // whatever was already fetched.
+        store[teamId] = { at: Date.now(), detail }
+        writeJSON(LS_FORM_CACHE, store)
       } catch {}
     }
+    applyForms(formMap, detailMap)
+  }
+
+  function applyForms(formMap, detailMap) {
 
     setFixtures(prev => prev.map(f => ({
       ...f,
@@ -134,7 +250,7 @@ export function useFixtures({ setStatus, setHealth }) {
     const list = [...new Set((ids || []).map(Number).filter(Boolean))].slice(0, 100)
     if (!list.length) return 0
     try {
-      const res = await fetch(`/api/football/v4/matches?ids=${list.join(',')}`)
+      const res = await footballFetch(`v4/matches?ids=${list.join(',')}`)
       if (!res.ok) {
         if (res.status === 429) setHealth('football', { code: 429, msg: 'Rate limited on status refresh', count: null, at: Date.now() })
         return 0
@@ -172,7 +288,7 @@ export function useFixtures({ setStatus, setHealth }) {
     if (!fixture?.id) return null
     if (h2hCache[fixture.id]) return h2hCache[fixture.id]
     try {
-      const res = await fetch(`/api/football/v4/matches/${fixture.id}/head2head?limit=10`)
+      const res = await footballFetch(`v4/matches/${fixture.id}/head2head?limit=10`)
       if (!res.ok) return null
       const data = await res.json()
       const matches = data.matches || []
@@ -200,5 +316,8 @@ export function useFixtures({ setStatus, setHealth }) {
     }
   }
 
-  return { fixtures, fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H }
+  return {
+    fixtures, fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H,
+    rateLimitedUntil, fixturesFetchedAt,
+  }
 }

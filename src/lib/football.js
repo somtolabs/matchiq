@@ -1,4 +1,91 @@
-/* football-data.org response shaping. */
+/* football-data.org response shaping, plus the request gate that keeps the app
+ * inside the plan's rate limit. */
+
+import { delay } from './storage.js'
+
+/* The free tier allows 10 requests per minute. Verified against the live API:
+ * the 11th request inside a window returns
+ *   HTTP 429 {"message":"You reached your request limit. Wait 48 seconds.","errorCode":429}
+ *
+ * A cold load legitimately needs ~18 calls (the match list, three competition
+ * endpoints, and one per team for form), so without a gate the back half of every
+ * load was throttled — and because fetchRange treated 429 as "no matches", a
+ * throttled list call rendered as "a quiet day, nothing on the slate".
+ *
+ * Nine, not ten: the limit is enforced upstream on a window we can't see the
+ * start of, so one slot is left as headroom. */
+export const FOOTBALL_RATE_LIMIT = 9
+export const FOOTBALL_WINDOW_MS = 60000
+
+let dispatched = []          // timestamps of requests actually sent
+let gate = Promise.resolve()  // serialises slot reservation
+let blockedUntil = 0          // set when upstream tells us to wait
+
+const rateLimitListeners = new Set()
+
+/* Lets the UI show an honest "rate limited, retrying" state instead of an empty
+ * one. Returns an unsubscribe function. */
+export function onFootballRateLimit(fn) {
+  rateLimitListeners.add(fn)
+  return () => rateLimitListeners.delete(fn)
+}
+
+export function footballBlockedMs() {
+  return Math.max(0, blockedUntil - Date.now())
+}
+
+/* football-data puts the wait in the message body rather than a Retry-After
+ * header, so read it from there and fall back to a full window. */
+export function parseWaitMs(body) {
+  const m = /wait\s+(\d+)\s*second/i.exec(String(body?.message || body || ''))
+  const secs = m ? Number(m[1]) : NaN
+  return Number.isFinite(secs) && secs > 0 ? (secs + 1) * 1000 : FOOTBALL_WINDOW_MS
+}
+
+/* Claims one slot in the rolling window, waiting if the window is full or if a
+ * 429 has told us to stand down. Reservations are serialised so two concurrent
+ * callers can't both take the last slot. */
+async function reserveSlot() {
+  const run = gate.then(async () => {
+    const blocked = footballBlockedMs()
+    if (blocked > 0) await delay(blocked)
+    dispatched = dispatched.filter(t => Date.now() - t < FOOTBALL_WINDOW_MS)
+    if (dispatched.length >= FOOTBALL_RATE_LIMIT) {
+      const wait = FOOTBALL_WINDOW_MS - (Date.now() - dispatched[0]) + 250
+      if (wait > 0) await delay(wait)
+      dispatched = dispatched.filter(t => Date.now() - t < FOOTBALL_WINDOW_MS)
+    }
+    dispatched.push(Date.now())
+  })
+  gate = run.catch(() => {})
+  return run
+}
+
+/* Every football-data call in the app goes through here. `path` is the part after
+ * /api/football/ — no leading slash, and no trailing slash before the query, which
+ * the vercel.json rewrite does not match. */
+export async function footballFetch(path) {
+  await reserveSlot()
+  const res = await fetch(`/api/football/${path}`)
+  if (res.status === 429) {
+    let body = null
+    try { body = await res.clone().json() } catch {}
+    const waitMs = parseWaitMs(body)
+    blockedUntil = Date.now() + waitMs
+    console.warn(`[football-api] 429 on ${path} — ${body?.message || 'rate limited'} · holding requests for ${Math.round(waitMs / 1000)}s`)
+    for (const fn of rateLimitListeners) {
+      try { fn({ waitMs, path, message: body?.message || 'Rate limited' }) } catch {}
+    }
+  }
+  return res
+}
+
+/* Test seam: the gate is module state, and a fresh page load starts empty. */
+export function resetFootballGate() {
+  dispatched = []
+  blockedUntil = 0
+  gate = Promise.resolve()
+}
 
 /* Maps a raw /v4/matches item to the internal fixture shape the UI consumes.
  * Returns null for malformed items so callers can .filter(Boolean). */

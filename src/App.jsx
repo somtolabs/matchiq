@@ -8,8 +8,10 @@ import '@fontsource-variable/inter'
 
 import {
   LS_THEME, LS_ANALYSIS, LS_TRACKED, LS_AGENT_PERF, LS_DIAG_OPEN, LS_ODDS_HIST,
+  LS_COMP_CACHE, COMP_TTL_MS, cacheFresh,
   delay, readJSON, writeJSON, readRaw, writeRaw,
 } from './lib/storage.js'
+import { footballFetch } from './lib/football.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
 import { GROQ_MODEL, GROQ_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject } from './lib/groq.js'
 import {
@@ -904,8 +906,21 @@ function LeagueTables({ fixtures, standingsCache, scorersCache, compDetailsCache
   )
 }
 
+/* Counts down a rate-limit hold so the wait is visible rather than a dead screen.
+ * Returns whole seconds remaining, 0 once the hold has passed. */
+function useCountdown(until) {
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!until || until <= Date.now()) return
+    const id = setInterval(() => setNow(Date.now()), 500)
+    return () => clearInterval(id)
+  }, [until])
+  if (!until) return 0
+  return Math.max(0, Math.ceil((until - now) / 1000))
+}
+
 function MatchesScreen({
-  fixtures, fixturesLoading, fixturesError, onRetry,
+  fixtures, fixturesLoading, fixturesError, onRetry, rateLimitedUntil,
   analysisCache, tracked, onOpen, onToggleTrack,
   standingsCache, scorersCache, compDetailsCache,
 }) {
@@ -977,7 +992,29 @@ function MatchesScreen({
     return [...groups].sort((a, b) => (a[0] === lead ? -1 : b[0] === lead ? 1 : 0))
   }, [groups, topPick])
 
+  const holdSecs = useCountdown(rateLimitedUntil)
+
   if (fixturesLoading) return <MatchesSkeleton />
+
+  /* A throttled fixture call used to fall through to "a quiet day — nothing on
+   * the slate", which reads as a real answer about the football rather than a
+   * temporary API state. Only shown when there is genuinely nothing cached to
+   * display; the retry is automatic, so there is nothing for the user to do. */
+  if (rateLimitedUntil > Date.now() && fixtures.length === 0) {
+    return (
+      <Card style={{ padding: 32 }}>
+        <div style={{ ...type.title, fontSize: 21, color: T.ink }}>
+          Temporarily rate limited by football-data.org
+        </div>
+        <div style={{ ...type.small, margin: '10px 0 20px' }}>
+          The fixture provider caps requests per minute on this plan. Retrying automatically
+          {holdSecs > 0 ? ` in ${holdSecs}s` : ' now'} — no need to refresh.
+        </div>
+        <Button onClick={onRetry} kind="soft">Retry now</Button>
+      </Card>
+    )
+  }
+
   if (fixturesError) {
     return (
       <Card style={{ padding: 32 }}>
@@ -4234,8 +4271,10 @@ function MatchIQ({ user, username, onUsernameChange }) {
 
   const [activeTab, setActiveTab] = useState('matches')
   const { apiStatus, apiHealth, setStatus, setHealth } = useApiHealth()
-  const { fixtures, fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H } =
-    useFixtures({ setStatus, setHealth })
+  const {
+    fixtures, fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H,
+    rateLimitedUntil, fixturesFetchedAt,
+  } = useFixtures({ setStatus, setHealth })
 
   const [diagOpen, setDiagOpen] = useState(() => readRaw(LS_DIAG_OPEN) !== '0')
   useEffect(() => { writeRaw(LS_DIAG_OPEN, diagOpen ? '1' : '0') }, [diagOpen])
@@ -4461,28 +4500,54 @@ function MatchIQ({ user, username, onUsernameChange }) {
     }
   }
 
-  /* -------- competition enrichment (standings, scorers, details) -------- */
+  /* -------- competition enrichment (standings, scorers, details) --------
+   * Three requests per competition, and they were re-fired on every refresh.
+   * Standings and scorers only move when a match finishes, so a six-hour cache
+   * takes this to zero on a refresh without ever showing a stale table. */
   async function loadCompetitionData(fixturesList) {
     const codes = [...new Set(fixturesList.map(f => f.competitionCode).filter(Boolean))].slice(0, 6)
+    const store = readJSON(LS_COMP_CACHE, {}) || {}
+    const stale = []
     for (const code of codes) {
-      await delay(300)
+      const entry = store[code]
+      if (cacheFresh(entry, COMP_TTL_MS)) {
+        if (entry.details) setCompDetailsCache(prev => ({ ...prev, [code]: entry.details }))
+        if (entry.standings) setStandingsCache(prev => ({ ...prev, [code]: entry.standings }))
+        if (entry.scorers) setScorersCache(prev => ({ ...prev, [code]: entry.scorers }))
+      } else {
+        stale.push(code)
+      }
+    }
+    console.log(`[football-api] competitions: ${codes.length} · ${codes.length - stale.length} cached · ${stale.length} to fetch`)
+
+    for (const code of stale) {
       try {
         const [detRes, stRes, scRes] = await Promise.allSettled([
-          fetch(`/api/football/v4/competitions/${code}`),
-          fetch(`/api/football/v4/competitions/${code}/standings`),
-          fetch(`/api/football/v4/competitions/${code}/scorers?limit=10`),
+          footballFetch(`v4/competitions/${code}`),
+          footballFetch(`v4/competitions/${code}/standings`),
+          footballFetch(`v4/competitions/${code}/scorers?limit=10`),
         ])
+        const entry = { at: Date.now() }
         if (detRes.status === 'fulfilled' && detRes.value.ok) {
           const d = await detRes.value.json()
+          entry.details = d
           setCompDetailsCache(prev => ({ ...prev, [code]: d }))
         }
         if (stRes.status === 'fulfilled' && stRes.value.ok) {
           const d = await stRes.value.json()
-          setStandingsCache(prev => ({ ...prev, [code]: d.standings || [] }))
+          entry.standings = d.standings || []
+          setStandingsCache(prev => ({ ...prev, [code]: entry.standings }))
         }
         if (scRes.status === 'fulfilled' && scRes.value.ok) {
           const d = await scRes.value.json()
-          setScorersCache(prev => ({ ...prev, [code]: d.scorers || [] }))
+          entry.scorers = d.scorers || []
+          setScorersCache(prev => ({ ...prev, [code]: entry.scorers }))
+        }
+        // Only banked if something actually came back, so a throttled attempt
+        // retries on the next load instead of caching a hole for six hours.
+        if (entry.details || entry.standings || entry.scorers) {
+          store[code] = entry
+          writeJSON(LS_COMP_CACHE, store)
         }
       } catch (e) {
         console.warn(`[comp ${code}] enrichment failed:`, e.message)
@@ -4549,12 +4614,22 @@ function MatchIQ({ user, username, onUsernameChange }) {
       (f.status === 'SCHEDULED' && f.kickoffDate && new Date(f.kickoffDate).getTime() < now))
   }, [fixtures])
 
+  const fetchedAtRef = useRef(fixturesFetchedAt)
+  fetchedAtRef.current = fixturesFetchedAt
+
   useEffect(() => {
     if (!watchKey) return
     const ids = watchKey.split(',').map(Number)
-    const tick = () => { if (!document.hidden) refreshRef.current(ids) }
-    tick()
-    const id = setInterval(tick, urgent ? 60000 : 300000)
+    const tick = ({ initial = false } = {}) => {
+      if (document.hidden) return
+      /* The list was just fetched from the network — refreshing the same ids
+       * immediately is a duplicate call against the minute limit. When the list
+       * came from cache this does run, which is what keeps live scores honest. */
+      if (initial && Date.now() - fetchedAtRef.current < 30000) return
+      refreshRef.current(ids)
+    }
+    tick({ initial: true })
+    const id = setInterval(() => tick(), urgent ? 60000 : 300000)
     const onVisible = () => { if (!document.hidden) refreshRef.current(ids) }
     document.addEventListener('visibilitychange', onVisible)
     return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible) }
@@ -4744,7 +4819,8 @@ function MatchIQ({ user, username, onUsernameChange }) {
     if (activeTab === 'matches') return (
       <MatchesScreen
         fixtures={fixtures} fixturesLoading={fixturesLoading} fixturesError={fixturesError}
-        onRetry={loadFixtures}
+        rateLimitedUntil={rateLimitedUntil}
+        onRetry={() => loadFixtures(false, { force: true })}
         analysisCache={analysisCache} tracked={tracked}
         onOpen={openFixture} onToggleTrack={toggleTracked}
         standingsCache={standingsCache} scorersCache={scorersCache} compDetailsCache={compDetailsCache}
