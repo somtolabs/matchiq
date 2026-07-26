@@ -1,6 +1,7 @@
 /* Analysis maths and secondary-market agent calls.
- * The Groq endpoint, model and auth header pattern are unchanged. */
+ * The Groq endpoint and auth header pattern are unchanged. */
 
+import { GROQ_MODEL, GROQ_ENDPOINT, AGENT_PARAMS, extractFirstJsonObject } from './groq.js'
 import {
   MARKET_SYSTEM_PROMPT,
   buildOverUnderPrompt,
@@ -40,29 +41,31 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis) {
     { key: 'over_under', label: 'Over/Under 2.5 Goals', prompt: buildOverUnderPrompt(fixture, mainAnalysis) },
     { key: 'btts', label: 'Both Teams to Score', prompt: buildBTTSPrompt(fixture, mainAnalysis) },
   ]
-  const results = await Promise.allSettled(markets.map(async (market) => {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+  /* Staggered rather than parallel. The main read has just spent most of the
+   * account's 8,000 tokens-per-minute allowance, so firing both of these
+   * immediately guarantees a rate-limit rejection and an empty goals panel.
+   * They're background enrichment — waiting is free, failing isn't. */
+  const results = await Promise.allSettled(markets.map(async (market, i) => {
+    if (i > 0) await new Promise(r => setTimeout(r, i * 25000))
+    const res = await fetch(GROQ_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`,
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model: GROQ_MODEL,
         messages: [
           { role: 'system', content: MARKET_SYSTEM_PROMPT },
           { role: 'user', content: market.prompt },
         ],
-        max_tokens: 500, temperature: 0.7,
+        response_format: { type: 'json_object' },
+        ...AGENT_PARAMS,
       }),
     })
     const data = await res.json()
-    const raw = data.choices?.[0]?.message?.content || ''
-    const noThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
-    const clean = noThink.replace(/```json|```/g, '').trim()
-    const first = clean.indexOf('{'); const last = clean.lastIndexOf('}')
-    if (first === -1 || last === -1) throw new Error('no json')
-    const parsed = JSON.parse(clean.slice(first, last + 1))
+    if (data.error) throw new Error(data.error.message || 'groq rejected the market call')
+    const parsed = extractFirstJsonObject(data.choices?.[0]?.message?.content)
     return { key: market.key, label: market.label, result: parsed }
   }))
   return results.filter(r => r.status === 'fulfilled').map(r => r.value)

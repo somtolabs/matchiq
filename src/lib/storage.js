@@ -8,6 +8,9 @@ export const LS_TRACKED    = 'matchiq_tracked'
 export const LS_AGENT_PERF = 'matchiq_agent_performance'
 export const LS_SWIPE_HINT = 'matchiq_swipe_hint_shown'
 export const LS_DIAG_OPEN  = 'matchiq_diag_open'
+/* First and latest odds seen per fixture — the only honest basis we have for
+ * showing market movement, since the odds API gives a snapshot, not a history. */
+export const LS_ODDS_HIST  = 'matchiq_odds_history'
 
 export const delay = (ms) => new Promise(r => setTimeout(r, ms))
 

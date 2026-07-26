@@ -16,33 +16,65 @@ export const COMPETITION_CONTEXT = {
   DED: 'Eredivisie — attacking, high-scoring, big three (Ajax, PSV, Feyenoord) dominate; smaller sides often over-perform expected goals at home.',
 }
 
-export const SYSTEM_PROMPT = `You are an elite football intelligence analyst with 20 years of professional experience in data-driven match analysis, betting market research, and tactical scouting. Your work has been used by professional sports trading desks.
+/* Kept deliberately dense. The account's Groq rate limit is 8,000 tokens per
+ * minute and it counts prompt + max_tokens together, so every token spent here
+ * is a token the model cannot spend thinking. Each directive below is load-
+ * bearing; the verbosity is not. */
+export const SYSTEM_PROMPT = `You are an elite football analyst: rigorous, specific, grounded only in the data you are given. Professional trading desks use your work.
 
-You think rigorously. You never hedge without a reason. You make specific, substantive claims grounded in the data provided. When data is sparse, you reason explicitly from what is available — competition characteristics, home advantage patterns, market signals — rather than retreating to generic statements.
+WHAT YOU DO NOT HAVE
+You do not have access to injury reports or team news. Do not speculate about specific players, injuries, suspensions, or lineup changes. Reason only from the form, head-to-head, standings, and market data provided. Never write a player's name or an availability claim — you have no basis for one. Inventing plausible-sounding team news is the worst failure possible here.
 
-CRITICAL OUTPUT RULES:
-1. Return ONLY valid JSON. No markdown. No fences. No explanation before or after. Pure JSON.
-2. Every string field must contain substantive analytical content. Never return empty strings.
-3. The reasoning field must be a minimum of 4 complete sentences that trace your analytical logic. Not a summary of the pick — the reasoning BEHIND the pick.
-4. key_factors arrays must contain specific, concrete observations — not generic statements like "home advantage is important."
-5. model_probability must reflect genuine probabilistic reasoning, not just confidence converted to a percentage.
-6. value_edge must be calculated as an integer: (model_probability * 100) minus the market implied probability derived from the odds. If no odds: set value_edge to 0.
-7. Never write "data unavailable" in a reasoning or factor field. If specific stats are missing, reason from what IS present.
+ORDER OF WORK — THE PICK COMES LAST
+Fill the schema fields in the order given. Do not work backwards from a conclusion.
+1. data_read — what the data shows for each team INDIVIDUALLY: its own form, goals, position, history. No comparison, no mention of the opponent, no lean.
+2. case_for — the specific factors favouring each side. The less-favoured team's case must be genuine and drawn from these numbers, not a courtesy sentence. If you truly cannot build one, name the datum that would have to change.
+3. form_analysis, tactical_analysis, market_analysis — the three angles.
+4. recommendation — only now. Its reasoning must WEIGH the case_for items against each other and say which won and why. The pick and confidence must follow from that written case.
+Be evidence-led: build the case first, then let the pick follow. If your written reasoning does not support the pick you were leaning toward, change the pick, not the reasoning.
 
-REASONING QUALITY STANDARD:
-Bad reasoning: "Arsenal have good form and the market favors them, so Arsenal win."
+HONEST UNCERTAINTY IS REQUIRED
+When the data does not clearly favour one outcome, say so and reflect it in a lower confidence and, where appropriate, a draw or neutral call. A genuinely uncertain match must not be forced into a confident pick — express the uncertainty a careful human analyst would. Confidence bands: 0.35–0.45 genuinely murky, 0.45–0.60 modest lean, 0.60–0.75 well supported, above 0.75 only when several independent pieces of data agree. "neutral" and "none" are correct answers when the data says so.
 
-Good reasoning: "Arsenal's recent sequence shows 3 wins and 1 draw in their last 5, conceding only 1 goal across those fixtures — suggesting a defensive solidity that creates asymmetric value against an opponent whose xGA suggests they struggle to create quality chances. The market has priced Arsenal at 1.95, implying 51.3% probability, but when you adjust for home advantage in this competition — where home sides win 58% of matches — and the form divergence, a true probability closer to 62% is defensible. The value edge is meaningful."
+OUTPUT RULES
+1. Return ONLY valid JSON — no markdown, no fences, no prose around it.
+2. No empty strings. Every field carries real analytical content.
+3. reasoning: minimum 4 sentences, tracing the weighing-up — not a summary of the pick.
+4. key_factors: concrete and specific, citing the actual numbers given. Never "home advantage matters".
+5. model_probability: genuine probabilistic reasoning, not confidence restated.
+6. value_edge: integer, (model_probability * 100) minus the market implied probability. No odds means 0.
+7. Never write "data unavailable" in a prose field — reason from what IS present and lower data_quality.
 
-TACTICAL ANALYSIS DEPTH:
-Always consider: pressing intensity vs defensive block effectiveness, set piece threat, transition patterns, and how team styles interact specifically — not generically.
+REASONING STANDARD
+Weak: "Arsenal have good form and the market favors them, so Arsenal win."
+Strong: "Arsenal's last five read 3-1-1, 9 scored and 4 conceded, but three were at home — the defensive record is flattered by venue and the away sample is thin. Against that, the visitors took 4 points from their last two on the road and sit 3 points back, which argues against a mismatch. The market's 1.95 implies 51.3% before the 4.2% overround; adjusting for the venue split and narrow points gap, near 56% is defensible, not the 62% a naive form read gives. That leaves a thin edge and mid-fifties confidence."
 
-MARKET ANALYSIS DEPTH:
-If odds are available: calculate implied probabilities, normalize the overround, identify which outcome the market is underweighting, and explain the line movement signal if provided.
-If no odds: analyze from pure form and tactical signals and set data_quality to "low".
+MATCHUP ANALYSIS
+Reason from what you have: goals for and against, home/away splits, whether the head-to-head scorelines show a repeated pattern between these specific sides, and league position as a quality proxy. Do not assert pressing scheme, formation or set-piece routine as fact — you were not given them.
 
-JSON SCHEMA (every field required):
+MARKET ANALYSIS
+With odds: compute implied probabilities, strip the overround, name the outcome the market underweights, and read the line movement if given.
+Without odds: work from form and matchup alone and set data_quality to "low".
+
+JSON SCHEMA (every field required, produced in this order):
 {
+  "data_read": {
+    "home_facts": "2-3 sentences on the home side's own form, goals, league position and history. No mention of the opponent. No lean.",
+    "away_facts": "2-3 sentences on the away side's own form, goals, league position and history. No mention of the opponent. No lean."
+  },
+  "case_for": {
+    "home": [
+      "specific data-grounded reason the home side wins",
+      "second specific data-grounded reason"
+    ],
+    "away": [
+      "specific data-grounded reason the away side wins — genuine, even if they are the underdog",
+      "second specific data-grounded reason"
+    ],
+    "draw": [
+      "specific data-grounded reason this ends level"
+    ]
+  },
   "form_analysis": {
     "home_verdict": "2-3 sentences of specific form analysis for the home team",
     "away_verdict": "2-3 sentences of specific form analysis for the away team",
@@ -74,7 +106,8 @@ JSON SCHEMA (every field required):
     "confidence_label": "low | medium | medium-high | high",
     "model_probability": 0.00,
     "value_edge": 0,
-    "reasoning": "Minimum 4 sentences. Must explain the analytical process: why the form edge exists, whether the tactical matchup confirms or contradicts it, what the market is pricing in versus what you believe the true probability is, and why this pick represents value or the best available outcome given the data.",
+    "reasoning": "Minimum 4 sentences. Must WEIGH the competing factors written in case_for against each other: which of them carried the most weight and why, which you discounted and why, what the market is pricing in versus what you believe the true probability is, and how confident that leaves you. This is the field where the pick is earned — it must be written as a weighing-up, not as a justification of a conclusion already reached.",
+    "uncertainty": "1-2 sentences stating plainly how close this call is and what single piece of the data would flip it. If the match is genuinely a coin-toss, say so here in those terms.",
     "red_flags": [
       "specific risk factor 1",
       "specific risk factor 2"
@@ -84,7 +117,39 @@ JSON SCHEMA (every field required):
   }
 }`
 
-export function buildPrompt(fixture) {
+/* Locates a team's row in a football-data.org standings payload
+ * (`[{ type, table: [...] }]`). Prefers the TOTAL table when several are present. */
+export function standingsRowFor(standings, teamId) {
+  if (!Array.isArray(standings) || !teamId) return null
+  const groups = [...standings].sort((a, b) =>
+    (a.type === 'TOTAL' ? -1 : 0) - (b.type === 'TOTAL' ? -1 : 0))
+  for (const g of groups) {
+    const row = (g.table || []).find(r => r.team?.id === teamId)
+    if (row) return { row, size: (g.table || []).length }
+  }
+  return null
+}
+
+/* One line per match: result, goals for/against, venue, and — where the
+ * standings are known — whether the opponent sits in the top or bottom half. */
+function formDetailLines(detail, standings) {
+  if (!Array.isArray(detail) || detail.length === 0) return null
+  return detail.map(m => {
+    const venue = m.venue === 'H' ? 'home' : 'away'
+    const word = m.result === 'W' ? 'won' : m.result === 'L' ? 'lost' : 'drew'
+    let half = ''
+    const opp = m.opponentId ? standingsRowFor(standings, m.opponentId) : null
+    if (opp && opp.size > 0) {
+      half = opp.row.position <= Math.ceil(opp.size / 2)
+        ? ` — opponent top half, ${opp.row.position} of ${opp.size}`
+        : ` — opponent bottom half, ${opp.row.position} of ${opp.size}`
+    }
+    return `  ${word} ${m.gf}-${m.ga} ${venue} v ${m.opponent || 'unknown'}${m.date ? ` (${m.date})` : ''}${half}`
+  }).join('\n')
+}
+
+export function buildPrompt(fixture, context = {}) {
+  const standings = context.standings || null
   const homeForm = fixture.homeForm || []
   const awayForm = fixture.awayForm || []
 
@@ -95,6 +160,30 @@ export function buildPrompt(fixture) {
     const l = form.filter(r => r === 'L').length
     return `${form.join('-')} (${w}W ${d}D ${l}L in last ${form.length})`
   }
+
+  /* Goals-level form. Falls back to the W/D/L letters when the per-match
+   * detail hasn't arrived, so a slow enrichment never blanks the prompt. */
+  const formBlock = (label, letters, detail) => {
+    const lines = formDetailLines(detail, standings)
+    if (!lines) return `${label} recent form (newest first):\n  ${formStr(letters)}\n  Per-match goal detail not available for this team.`
+    const gf = detail.reduce((s, m) => s + (m.gf || 0), 0)
+    const ga = detail.reduce((s, m) => s + (m.ga || 0), 0)
+    const homeGames = detail.filter(m => m.venue === 'H').length
+    return `${label} recent form (newest first):\n  ${formStr(letters)}\n${lines}\n  Totals across those ${detail.length}: ${gf} scored, ${ga} conceded (${(gf / detail.length).toFixed(2)} and ${(ga / detail.length).toFixed(2)} per match); ${homeGames} of them at home.`
+  }
+
+  const standingsStr = (() => {
+    const h = standingsRowFor(standings, fixture.homeTeamId)
+    const a = standingsRowFor(standings, fixture.awayTeamId)
+    if (!h && !a) return 'League standings not available for this competition'
+    const line = (label, s) => s
+      ? `${label}: ${s.row.position} of ${s.size} — ${s.row.points} pts from ${s.row.playedGames} played (${s.row.won}W ${s.row.draw}D ${s.row.lost}L), ${s.row.goalsFor} scored, ${s.row.goalsAgainst} conceded, GD ${s.row.goalDifference > 0 ? '+' : ''}${s.row.goalDifference}`
+      : `${label}: not in this table`
+    const gap = (h && a)
+      ? `\nPoints gap: ${Math.abs(h.row.points - a.row.points)} in favour of ${h.row.points === a.row.points ? 'neither — level on points' : (h.row.points > a.row.points ? fixture.homeTeam : fixture.awayTeam)}. Positions separated by ${Math.abs(h.row.position - a.row.position)} place(s).`
+      : ''
+    return `${line(fixture.homeTeam, h)}\n${line(fixture.awayTeam, a)}${gap}`
+  })()
 
   const oddsStr = fixture.odds?.home ? (() => {
     const homeOdds = parseFloat(fixture.odds.home)
@@ -109,9 +198,25 @@ export function buildPrompt(fixture) {
 
   const h2hStr = fixture.h2h?.matches?.length > 0 ? (() => {
     const matches = fixture.h2h.matches.slice(0, 5)
-    const homeWins = matches.filter(m => m.winner === 'HOME_TEAM').length
-    const awayWins = matches.filter(m => m.winner === 'AWAY_TEAM').length
-    const draws = matches.filter(m => m.winner === 'DRAW').length
+    /* Tally from the scorelines, not from m.winner. football-data.org leaves
+     * `winner` unset on plenty of head-to-head rows, which previously made this
+     * line claim "0 wins, 0 draws" directly above five decisive results — the
+     * model was being handed a self-contradicting brief. */
+    let homeWins = 0, awayWins = 0, draws = 0
+    for (const m of matches) {
+      const hs = m.score?.fullTime?.home ?? m.homeScore
+      const as = m.score?.fullTime?.away ?? m.awayScore
+      if (hs == null || as == null) continue
+      if (hs === as) { draws++; continue }
+      // Match on team id — these fixtures alternate venue, so "home" in the
+      // H2H row is not necessarily the home side of the fixture being analysed.
+      const rowHomeId = m.homeTeam?.id
+      if (rowHomeId == null || fixture.homeTeamId == null) continue
+      const fixtureHomeWasHomeHere = rowHomeId === fixture.homeTeamId
+      if ((hs > as) === fixtureHomeWasHomeHere) homeWins++
+      else awayWins++
+    }
+    const decided = homeWins + awayWins + draws
     const results = matches.map(m => {
       const dt = m.utcDate ? new Date(m.utcDate).toISOString().split('T')[0] : (m.date || 'unknown')
       const ht = m.homeTeam?.name || m.homeTeam || 'Home'
@@ -121,7 +226,10 @@ export function buildPrompt(fixture) {
       const comp = m.competition?.name || m.competition || ''
       return `${ht} ${hs}-${as} ${at} (${dt}${comp ? ' · ' + comp : ''})`
     }).join('\n')
-    return `Last ${matches.length} meetings: ${fixture.homeTeam} wins ${homeWins}, draws ${draws}, ${fixture.awayTeam} wins ${awayWins}\n${results}`
+    const tally = decided > 0
+      ? `Last ${matches.length} meetings: ${fixture.homeTeam} wins ${homeWins}, draws ${draws}, ${fixture.awayTeam} wins ${awayWins}`
+      : `Last ${matches.length} meetings (results below; per-match winners not resolvable from the feed)`
+    return `${tally}\n${results}`
   })() : 'Head-to-head history not available'
 
   const marketContext = fixture.marketMovement && !/Fetching|Live odds/i.test(fixture.marketMovement)
@@ -156,11 +264,12 @@ KICKOFF: ${fixture.kickoff} | VENUE: ${fixture.venue || 'Unknown'}
 STATUS: ${fixture.status}
 
 ═══ FORM DATA ═══
-${fixture.homeTeam} recent form (newest first):
-  ${formStr(homeForm)}
+${formBlock(fixture.homeTeam, homeForm, fixture.homeFormDetail)}
 
-${fixture.awayTeam} recent form (newest first):
-  ${formStr(awayForm)}
+${formBlock(fixture.awayTeam, awayForm, fixture.awayFormDetail)}
+
+═══ LEAGUE STANDINGS ═══
+${standingsStr}
 
 ═══ HEAD TO HEAD ═══
 ${h2hStr}
@@ -169,19 +278,26 @@ ${h2hStr}
 ${oddsStr}
 Market context: ${marketContext}
 
+═══ WHAT IS NOT IN THIS BRIEF ═══
+There is no injury list, no suspension list, no team news and no confirmed lineup here. None is available to you. Do not name players and do not assert anything about availability — reason only from the form, standings, head-to-head and market data above.
+
 ═══ ANALYTICAL INSTRUCTIONS ═══
-1. Analyze form sequences for momentum and defensive/offensive trends, not just win/loss counts.
-2. Use H2H to identify structural patterns between these specific teams — not just overall records.
-3. If odds available: calculate normalized implied probabilities and identify market inefficiencies.
-4. Consider venue and competition context in your probability estimate.
-5. The reasoning must explain your actual analytical process, not just state the conclusion.
-6. Set data_quality based on: high (form + H2H + odds), medium (form + odds OR form + H2H), low (form only OR no form).
+1. Begin with data_read: describe each team on its own terms from the numbers above, without comparing them.
+2. Then case_for: build the real argument for home, for away, and for the draw. The underdog's case must be a genuine one drawn from these numbers.
+3. Analyze form sequences for momentum and defensive/offensive trends, using the goals and the home/away split — not just win/loss counts.
+4. Use the standings positions and points gap as your quality baseline, and note where recent form contradicts league position.
+5. Use H2H to identify structural patterns between these specific teams — not just overall records.
+6. If odds available: calculate normalized implied probabilities (strip the overround) and identify market inefficiencies.
+7. Only then write the recommendation. Its reasoning must weigh the cases above against each other, and the confidence must match how close that weighing actually was.
+8. Set data_quality based on: high (goal-level form + standings + H2H + odds), medium (two or three of those), low (letters-only form, or no form).
 
 Respond with the JSON schema only.`
 }
 
 export const MARKET_SYSTEM_PROMPT = `You are a football betting market analyst specializing in goals markets.
 Respond ONLY with valid JSON. No markdown, no code fences, no prose.
+
+You do not have access to injury reports or team news. Do not speculate about specific players, injuries, or lineup changes. Reason only from the goal and form data provided. Where that data does not clearly favour one side of the line, say so and set a confidence below 0.55 rather than forcing a confident call.
 
 Schema:
 {
@@ -193,11 +309,25 @@ Schema:
   "confidence_label": "low | medium | medium-high | high"
 }`
 
+/* Per-match goal detail is the real source here; season totals from the
+ * standings are the fallback. Only says "unavailable" when both are missing. */
+function goalsProfile(detail, season) {
+  if (Array.isArray(detail) && detail.length) {
+    const gf = detail.reduce((s, m) => s + (m.gf || 0), 0)
+    const ga = detail.reduce((s, m) => s + (m.ga || 0), 0)
+    const over = detail.filter(m => (m.gf || 0) + (m.ga || 0) > 2.5).length
+    const btts = detail.filter(m => (m.gf || 0) > 0 && (m.ga || 0) > 0).length
+    return `${(gf / detail.length).toFixed(2)} scored, ${(ga / detail.length).toFixed(2)} conceded per match over the last ${detail.length}; ${over} of those ${detail.length} went over 2.5 total goals; both teams scored in ${btts} of them`
+  }
+  if (season && season.played > 0) {
+    return `${(season.gf / season.played).toFixed(2)} scored, ${(season.ga / season.played).toFixed(2)} conceded per match across ${season.played} league games`
+  }
+  return 'goal data unavailable'
+}
+
 export function buildOverUnderPrompt(f, main) {
   const formStr = (arr) => Array.isArray(arr) && arr.length ? arr.join(' ') : 'no recent log'
-  const seasonGoals = (s) => s && s.played > 0
-    ? `${(s.gf / s.played).toFixed(2)} scored, ${(s.ga / s.played).toFixed(2)} conceded per match`
-    : 'season stats unavailable'
+  const seasonGoals = (s, detail) => goalsProfile(detail, s)
   return `MARKET: OVER/UNDER 2.5 GOALS
 
 FIXTURE
@@ -208,8 +338,8 @@ ${f.homeTeam}: ${formStr(f.homeForm)}
 ${f.awayTeam}: ${formStr(f.awayForm)}
 
 GOALS PROFILE
-${f.homeTeam}: ${seasonGoals(f.homeSeason)}
-${f.awayTeam}: ${seasonGoals(f.awaySeason)}
+${f.homeTeam}: ${seasonGoals(f.homeSeason, f.homeFormDetail)}
+${f.awayTeam}: ${seasonGoals(f.awaySeason, f.awayFormDetail)}
 
 MAIN ANALYSIS CONTEXT
 Pick: ${main?.recommendation?.pick || 'unknown'} at ${Math.round((main?.recommendation?.confidence || 0) * 100)}% confidence
@@ -219,9 +349,7 @@ Predict whether total goals will be OVER or UNDER 2.5. Respond with the JSON sch
 
 export function buildBTTSPrompt(f, main) {
   const formStr = (arr) => Array.isArray(arr) && arr.length ? arr.join(' ') : 'no recent log'
-  const cleanSheets = (s) => s && s.played > 0
-    ? `${(s.ga / s.played).toFixed(2)} conceded per match`
-    : 'defensive stats unavailable'
+  const cleanSheets = (s, detail) => goalsProfile(detail, s)
   return `MARKET: BOTH TEAMS TO SCORE
 
 FIXTURE
@@ -232,8 +360,8 @@ ${f.homeTeam}: ${formStr(f.homeForm)}
 ${f.awayTeam}: ${formStr(f.awayForm)}
 
 DEFENSIVE PROFILE
-${f.homeTeam}: ${cleanSheets(f.homeSeason)}
-${f.awayTeam}: ${cleanSheets(f.awaySeason)}
+${f.homeTeam}: ${cleanSheets(f.homeSeason, f.homeFormDetail)}
+${f.awayTeam}: ${cleanSheets(f.awaySeason, f.awayFormDetail)}
 
 MAIN ANALYSIS CONTEXT
 Pick: ${main?.recommendation?.pick || 'unknown'} at ${Math.round((main?.recommendation?.confidence || 0) * 100)}% confidence

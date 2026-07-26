@@ -7,10 +7,11 @@ import {
 import '@fontsource-variable/inter'
 
 import {
-  LS_THEME, LS_ANALYSIS, LS_TRACKED, LS_AGENT_PERF, LS_DIAG_OPEN,
+  LS_THEME, LS_ANALYSIS, LS_TRACKED, LS_AGENT_PERF, LS_DIAG_OPEN, LS_ODDS_HIST,
   delay, readJSON, writeJSON, readRaw, writeRaw,
 } from './lib/storage.js'
-import { SYSTEM_PROMPT, buildPrompt } from './lib/prompts.js'
+import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
+import { GROQ_MODEL, GROQ_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject } from './lib/groq.js'
 import {
   calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve,
   edgeToOutcome, AGENT_PERF_EMPTY,
@@ -773,7 +774,11 @@ function MatchRow({ fixture: f, analyzed, tracked, onOpen, onToggleTrack }) {
             <PulseDot size={8} />
           </span>
         ) : isFT ? (
-          <span style={{ ...type.small, fontWeight: 560, color: T.faint, fontSize: 12 }}>Ended</span>
+          <span style={{ ...type.small, fontWeight: 600, color: T.ink, fontSize: 12 }}>Full time</span>
+        ) : f.status === 'POSTPONED' ? (
+          <span style={{ ...type.small, fontWeight: 560, color: T.faint, fontSize: 12 }}>Postponed</span>
+        ) : f.status === 'CANCELLED' ? (
+          <span style={{ ...type.small, fontWeight: 560, color: T.faint, fontSize: 12 }}>Called off</span>
         ) : (
           <span style={{ ...type.num, fontSize: 13, color: T.sub }}>{f.kickoff}</span>
         )}
@@ -906,6 +911,7 @@ function MatchesScreen({
   const [when, setWhen] = useState('all') // all | live | soon
 
   const live = fixtures.filter(f => f.status === 'IN_PLAY' || f.status === 'LIVE')
+  const played = fixtures.filter(f => f.status === 'FINISHED')
   const isMobile = useWindowWidth() < 768
 
   /* The single highest-conviction verdict already written, if any — real data
@@ -943,6 +949,7 @@ function MatchesScreen({
     if (comp !== 'all') list = list.filter(f => (f.competitionCode || f.competition) === comp)
     if (when === 'live') list = list.filter(f => f.status === 'IN_PLAY' || f.status === 'LIVE')
     if (when === 'soon') list = list.filter(f => f.status === 'SCHEDULED' || f.status === 'TIMED')
+    if (when === 'done') list = list.filter(f => f.status === 'FINISHED')
     return list
   }, [fixtures, comp, when])
 
@@ -1091,7 +1098,12 @@ function MatchesScreen({
           {/* Filters */}
           <Reveal delay={0.1}>
             <div className="iq-scroll-x" style={{ display: 'flex', gap: 6, marginTop: 18, paddingBottom: 4, whiteSpace: 'nowrap' }}>
-              {[{ k: 'all', l: 'Everything' }, { k: 'live', l: `Live now${live.length ? ` · ${live.length}` : ''}` }, { k: 'soon', l: 'Upcoming' }].map(o => (
+              {[
+                { k: 'all', l: 'Everything' },
+                { k: 'live', l: `Live now${live.length ? ` · ${live.length}` : ''}` },
+                { k: 'soon', l: 'Upcoming' },
+                { k: 'done', l: `Played${played.length ? ` · ${played.length}` : ''}` },
+              ].map(o => (
                 <button key={o.k} onClick={() => setWhen(o.k)} style={{
                   background: when === o.k ? T.ink : 'transparent',
                   color: when === o.k ? T.bg : T.sub,
@@ -1459,6 +1471,41 @@ function VerdictStory({ fixture: fx, data, onReRun }) {
         </Reveal>
       )}
 
+      {/* THE CASE EACH WAY — the work done before the pick was made.
+          Rendered in the order the model was required to produce it. */}
+      {(data.case_for?.home?.length || data.case_for?.away?.length || data.case_for?.draw?.length) && (
+        <Reveal>
+          <Card style={{ padding: 30 }}>
+            <Eyebrow>The case each way, before we picked</Eyebrow>
+            <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 20 }}>
+              {[
+                [`For ${fx.homeTeam}`, data.case_for?.home],
+                ['For a draw', data.case_for?.draw],
+                [`For ${fx.awayTeam}`, data.case_for?.away],
+              ].map(([label, items]) => (items?.length > 0) && (
+                <div key={label}>
+                  <div style={{ ...type.small, fontSize: 13.5, fontWeight: 600, color: T.ink }}>{label}</div>
+                  {items.map((it, i) => (
+                    <div key={i} style={{
+                      ...type.small, fontSize: 14, color: T.sub, marginTop: 8,
+                      paddingLeft: 12, borderLeft: `2px solid ${T.line}`,
+                    }}>{it}</div>
+                  ))}
+                </div>
+              ))}
+            </div>
+            {r.uncertainty && (
+              <div style={{
+                marginTop: 22, padding: '16px 18px', background: T.card2, borderRadius: 14,
+                ...type.small, fontSize: 14, color: T.ink,
+              }}>
+                <strong style={{ fontWeight: 600 }}>How close it was: </strong>{r.uncertainty}
+              </div>
+            )}
+          </Card>
+        </Reveal>
+      )}
+
       {/* THE MARKET DISAGREES — only when our pick isn't the implied favourite */}
       {marketDisagrees && (
         <Reveal>
@@ -1650,6 +1697,21 @@ function VerdictStory({ fixture: fx, data, onReRun }) {
 
             {/* Per-angle detail */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+              {(data.data_read?.home_facts || data.data_read?.away_facts) && (
+                <div>
+                  <Eyebrow>What the data said, before any comparison</Eyebrow>
+                  {data.data_read?.home_facts && (
+                    <div style={{ ...type.small, marginTop: 10, color: T.ink }}>
+                      <strong style={{ fontWeight: 560 }}>{fx.homeTeam}:</strong> {data.data_read.home_facts}
+                    </div>
+                  )}
+                  {data.data_read?.away_facts && (
+                    <div style={{ ...type.small, marginTop: 5, color: T.ink }}>
+                      <strong style={{ fontWeight: 560 }}>{fx.awayTeam}:</strong> {data.data_read.away_facts}
+                    </div>
+                  )}
+                </div>
+              )}
               <div>
                 <Eyebrow>Form angle</Eyebrow>
                 <div style={{ ...type.small, marginTop: 10, color: T.ink }}>
@@ -1691,10 +1753,47 @@ function VerdictStory({ fixture: fx, data, onReRun }) {
   )
 }
 
-function MatchDetail({ fixture, data, loading, error, onBack, onRetry, onAnalyze, tracked, onToggleTrack }) {
+/* The Track action on a written verdict. Tracking and the Match Center are one
+ * gesture: it marks the fixture (through the same `tracked` set the heart uses,
+ * not a parallel store) and opens the centre on the same tap. */
+function TrackBar({ tracked, onTrack }) {
+  return (
+    <Reveal>
+      <Card className="iq-lift" onClick={onTrack} style={{
+        padding: '18px 22px', marginTop: 26, cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap',
+      }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ ...type.small, fontSize: 14.5, fontWeight: 560, color: T.ink }}>
+            {tracked ? 'Open the match centre' : 'Track this match'}
+          </div>
+          <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 4 }}>
+            {tracked
+              ? 'Form, table, head-to-head, market and live score in one place.'
+              : 'Follow it and see everything we know — form, table, head-to-head, market, live score.'}
+          </div>
+        </div>
+        <span style={{
+          display: 'inline-flex', alignItems: 'center', gap: 7, flexShrink: 0,
+          background: tracked ? T.accentBg : T.ink, color: tracked ? T.accent : T.bg,
+          borderRadius: 999, padding: '9px 18px',
+          fontFamily: T.sans, fontSize: 13.5, fontWeight: 600,
+        }}>
+          <Heart size={14} strokeWidth={2} fill={tracked ? 'currentColor' : 'none'} />
+          {tracked ? 'Match centre' : 'Track'}
+        </span>
+      </Card>
+    </Reveal>
+  )
+}
+
+function MatchDetail({ fixture, data, loading, error, onBack, onRetry, onAnalyze, tracked, onToggleTrack, onOpenCenter }) {
   return (
     <div style={{ maxWidth: 640, margin: '0 auto' }}>
       <DetailHeader fixture={fixture} onBack={onBack} tracked={tracked} onToggleTrack={onToggleTrack} />
+      {data && !loading && !error && (
+        <TrackBar tracked={tracked} onTrack={() => onOpenCenter(fixture)} />
+      )}
       {loading ? (
         <ThinkingState fixture={fixture} />
       ) : error ? (
@@ -1708,6 +1807,364 @@ function MatchDetail({ fixture, data, loading, error, onBack, onRetry, onAnalyze
       ) : (
         <MatchPreview fixture={fixture} onAnalyze={onAnalyze} />
       )}
+    </div>
+  )
+}
+
+/* ============================================================
+ * MATCH CENTER — everything real we actually know about a match
+ *
+ * Reached from the Track button on a verdict, or by opening a followed match
+ * from the Following list. Deliberately built from the app's existing card
+ * system rather than the flat auth styling, because it lives inside the app
+ * shell next to MatchDetail.
+ *
+ * Every field here is read from a real API response. The free football-data.org
+ * tier returns status, scores (full/half/regular/extra), lastUpdated, matchday,
+ * venue and referees — and nothing else. There is no `minute` field, no event
+ * feed, no lineups and no match statistics, so no minute counter, timeline or
+ * heatmap is rendered. Where that data would go, the Live section says plainly
+ * that the plan doesn't include it.
+ * ============================================================ */
+
+function CenterSection({ title, children, accent }) {
+  return (
+    <Reveal>
+      <Card style={{ padding: 28 }}>
+        <Eyebrow style={accent ? { color: T.live } : undefined}>{title}</Eyebrow>
+        <div style={{ marginTop: 16 }}>{children}</div>
+      </Card>
+    </Reveal>
+  )
+}
+
+function StatRow({ label, value, strong }) {
+  return (
+    <div style={{
+      display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'baseline',
+      padding: '9px 0', borderBottom: `1px solid ${T.line}`,
+    }}>
+      <span style={{ ...type.small, color: T.sub, minWidth: 0 }}>{label}</span>
+      <span style={{
+        ...type.small, fontSize: 13.5, color: T.ink, textAlign: 'right',
+        fontWeight: strong ? 600 : 500, flexShrink: 0,
+      }}>{value}</span>
+    </div>
+  )
+}
+
+/* Goal-level form, the same data the prompt reasons from. */
+function FormLedger({ team, letters, detail }) {
+  const rows = Array.isArray(detail) ? detail : []
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ ...type.small, fontSize: 14, fontWeight: 560, color: T.ink }}>{team}</span>
+        <FormBeads form={letters} />
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ ...type.small, color: T.faint, marginTop: 8, fontSize: 12.5 }}>
+          Per-match detail hasn't loaded for this side yet.
+        </div>
+      ) : (
+        <>
+          <div style={{ marginTop: 10 }}>
+            {rows.map((m, i) => (
+              <div key={i} style={{
+                display: 'grid', gridTemplateColumns: '20px 44px minmax(0,1fr) auto',
+                gap: 10, alignItems: 'baseline', padding: '6px 0',
+                borderBottom: i < rows.length - 1 ? `1px solid ${T.line}` : 'none',
+              }}>
+                <span style={{
+                  ...type.small, fontSize: 11.5, fontWeight: 600,
+                  color: m.result === 'W' ? T.good : m.result === 'L' ? T.bad : T.faint,
+                }}>{m.result}</span>
+                <span style={{ ...type.num, fontSize: 13, color: T.ink }}>{m.gf}–{m.ga}</span>
+                <span style={{
+                  ...type.small, fontSize: 12.5, color: T.sub, minWidth: 0,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>
+                  {m.venue === 'H' ? 'home' : 'away'} v {m.opponent || 'unknown'}
+                </span>
+                <span style={{ ...type.small, fontSize: 11.5, color: T.faint }}>{m.date || ''}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 10 }}>
+            {rows.reduce((s, m) => s + m.gf, 0)} scored, {rows.reduce((s, m) => s + m.ga, 0)} conceded
+            across those {rows.length}.
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function OddsMovement({ fixture: f, history }) {
+  const o = f.odds || {}
+  if (o.home == null) {
+    return <div style={{ ...type.small, color: T.faint }}>No live prices for this match yet.</div>
+  }
+  const first = history?.first
+  const move = (key) => {
+    if (!first || first[key] == null) return null
+    const d = parseFloat(o[key]) - parseFloat(first[key])
+    if (!isFinite(d) || Math.abs(d) < 0.01) return { d: 0, text: 'unchanged', color: T.faint }
+    return {
+      d,
+      text: `${d > 0 ? '+' : ''}${d.toFixed(2)} since ${new Date(history.firstAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`,
+      // Drifting out means the market grew less confident in that outcome.
+      color: d > 0 ? T.bad : T.good,
+    }
+  }
+  return (
+    <div>
+      <MarketBar fixture={f} />
+      <div style={{ marginTop: 20 }}>
+        {[['home', f.homeTeam], ['draw', 'Draw'], ['away', f.awayTeam]].map(([k, label]) => {
+          const m = move(k)
+          return (
+            <div key={k} style={{
+              display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'baseline',
+              padding: '8px 0', borderBottom: `1px solid ${T.line}`,
+            }}>
+              <span style={{ ...type.small, color: T.ink, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+              <span style={{ display: 'inline-flex', gap: 10, alignItems: 'baseline', flexShrink: 0 }}>
+                <span style={{ ...type.num, fontSize: 14, color: T.ink }}>{parseFloat(o[k]).toFixed(2)}</span>
+                {m && <span style={{ ...type.small, fontSize: 11.5, color: m.color }}>{m.text}</span>}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+      {!first && (
+        <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 12 }}>
+          This is the first price we've recorded for this match — movement will show from your next visit.
+        </div>
+      )}
+      {f.marketMovement && !/Fetching/i.test(f.marketMovement) && (
+        <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 10 }}>{f.marketMovement}</div>
+      )}
+    </div>
+  )
+}
+
+function MatchCenter({
+  fixture: f, analysis, standings, oddsHistory,
+  onBack, onOpenAnalysis, tracked, onToggleTrack,
+}) {
+  const isLive = f.status === 'IN_PLAY' || f.status === 'LIVE'
+  const isFT = f.status === 'FINISHED'
+  const hasScore = f.goalsHome != null && f.goalsAway != null
+  const home = standingsRowFor(standings, f.homeTeamId)
+  const away = standingsRowFor(standings, f.awayTeamId)
+  const h2hMatches = f.h2h?.matches || []
+
+  const statusLine = isLive ? 'Playing now'
+    : isFT ? 'Full time'
+    : f.status === 'POSTPONED' ? 'Postponed'
+    : f.status === 'CANCELLED' ? 'Called off'
+    : `${f.matchDate ? f.matchDate + ' · ' : ''}${f.kickoff}`
+
+  return (
+    <div style={{ maxWidth: 640, margin: '0 auto' }}>
+      <Reveal>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '8px 0 30px' }}>
+          <button onClick={onBack} style={{
+            background: 'transparent', border: 'none', cursor: 'pointer', color: T.sub,
+            display: 'inline-flex', alignItems: 'center', gap: 4, padding: 0,
+            fontFamily: T.sans, fontSize: 14.5, fontWeight: 500,
+          }}><ChevronLeft size={17} strokeWidth={1.8} /> Back</button>
+          <button onClick={() => onToggleTrack(f.id)}
+            aria-label={tracked ? 'Stop tracking this match' : 'Track this match'}
+            style={{
+              background: tracked ? T.accentBg : 'transparent',
+              border: `1px solid ${tracked ? 'transparent' : T.line}`, borderRadius: 999,
+              padding: '7px 16px', cursor: 'pointer', color: tracked ? T.accent : T.sub,
+              display: 'inline-flex', alignItems: 'center', gap: 7,
+              fontFamily: T.sans, fontSize: 13, fontWeight: 560,
+            }}>
+            <Heart size={14} strokeWidth={1.8} fill={tracked ? 'currentColor' : 'none'} />
+            {tracked ? 'Tracking' : 'Track'}
+          </button>
+        </div>
+
+        <Eyebrow style={{ color: isLive ? T.live : T.accent }}>Match centre</Eyebrow>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 16, alignItems: 'center', marginTop: 16 }}>
+          {[{ n: f.homeTeam, l: f.homeLogo }, null, { n: f.awayTeam, l: f.awayLogo }].map((side, i) =>
+            side === null ? (
+              <div key="mid" style={{ textAlign: 'center' }}>
+                {hasScore ? (
+                  <div style={{ ...type.num, fontSize: 34, fontWeight: 600, color: isLive ? T.live : T.ink }}>
+                    {f.goalsHome}–{f.goalsAway}
+                  </div>
+                ) : (
+                  <div style={{ ...type.small, fontSize: 15, color: T.faint }}>v</div>
+                )}
+                <div style={{ ...type.small, color: isLive ? T.live : T.faint, marginTop: 6, fontSize: 12.5, fontWeight: isLive || isFT ? 620 : 500 }}>
+                  {isLive && <LiveDot size={6} />} {statusLine}
+                </div>
+              </div>
+            ) : (
+              <div key={i} style={{ textAlign: 'center', minWidth: 0 }}>
+                <Crest src={side.l} name={side.n} size={52} />
+                <div style={{ ...type.title, fontSize: 16.5, color: T.ink, marginTop: 12, lineHeight: 1.25 }}>{side.n}</div>
+              </div>
+            )
+          )}
+        </div>
+        <div style={{ textAlign: 'center', ...type.small, color: T.faint, marginTop: 14 }}>
+          {f.competition}{f.region ? ` · ${f.region}` : ''}{f.venue && f.venue !== 'TBC' ? ` · ${f.venue}` : ''}
+        </div>
+      </Reveal>
+
+      <div style={{ marginTop: 32, display: 'flex', flexDirection: 'column', gap: 18 }}>
+        {/* ---------- LIVE — only when the match is actually in play ---------- */}
+        {isLive && (
+          <CenterSection title="Live" accent>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
+              <span style={{ ...type.display, fontSize: 44, color: T.live }}>
+                {hasScore ? `${f.goalsHome}–${f.goalsAway}` : '—'}
+              </span>
+              <span style={{ ...type.small, color: T.sub }}>
+                {f.homeTeam} v {f.awayTeam}
+              </span>
+            </div>
+            <div style={{ marginTop: 16 }}>
+              <StatRow label="Status" value={f.statusShort === 'PAUSED' ? 'Half time' : 'In play'} strong />
+              {f.matchday != null && <StatRow label="Matchday" value={f.matchday} />}
+            </div>
+            {/* No minute counter: the current football-data.org plan does not
+                return a `minute` field, and inventing one would be fabrication. */}
+            <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 14 }}>
+              Our data plan returns the score and status for a live match, but not the clock —
+              so we don't show a minute rather than guess one.
+            </div>
+            <div style={{
+              marginTop: 18, padding: '16px 18px', background: T.card2, borderRadius: 14,
+            }}>
+              <div style={{ ...type.small, fontSize: 13, fontWeight: 560, color: T.ink }}>
+                Shot maps, heatmaps and event timelines
+              </div>
+              <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 6 }}>
+                Advanced live match visuals aren't available on the current data plan.
+              </div>
+            </div>
+          </CenterSection>
+        )}
+
+        {/* ---------- OVERVIEW — always ---------- */}
+        {analysis?.recommendation?.pick && (
+          <Reveal>
+            <Card className="iq-lift" onClick={onOpenAnalysis}
+              style={{ padding: 24, cursor: 'pointer', borderLeft: `3px solid ${T.accent}` }}>
+              <Eyebrow style={{ color: T.accent }}>Our reading of this match</Eyebrow>
+              <div style={{ ...type.title, fontSize: 18, color: T.ink, marginTop: 12 }}>
+                {pickHeadline(analysis.recommendation.pick, f)} — {Math.round((analysis.recommendation.confidence || 0) * 100)}% sure
+              </div>
+              <div style={{ ...type.small, color: T.sub, marginTop: 10, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                Read the full verdict <ChevronRight size={14} strokeWidth={2} />
+              </div>
+            </Card>
+          </Reveal>
+        )}
+
+        <CenterSection title="Recent form — last five">
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+            <FormLedger team={f.homeTeam} letters={f.homeForm} detail={f.homeFormDetail} />
+            <div style={{ height: 1, background: T.line }} />
+            <FormLedger team={f.awayTeam} letters={f.awayForm} detail={f.awayFormDetail} />
+          </div>
+        </CenterSection>
+
+        <CenterSection title="Where they stand">
+          {!home && !away ? (
+            <div style={{ ...type.small, color: T.faint }}>
+              We don't have a league table for {f.competition} — it may be a cup or knockout tie.
+            </div>
+          ) : (
+            <div>
+              {[[f.homeTeam, home], [f.awayTeam, away]].map(([name, s]) => (
+                <div key={name} style={{ marginBottom: 18 }}>
+                  <div style={{ ...type.small, fontSize: 14, fontWeight: 560, color: T.ink, marginBottom: 6 }}>{name}</div>
+                  {s ? (
+                    <>
+                      <StatRow label="Position" value={`${s.row.position} of ${s.size}`} strong />
+                      <StatRow label="Points" value={`${s.row.points} from ${s.row.playedGames} played`} />
+                      <StatRow label="Record" value={`${s.row.won}W ${s.row.draw}D ${s.row.lost}L`} />
+                      <StatRow label="Goals" value={`${s.row.goalsFor} scored, ${s.row.goalsAgainst} conceded (${s.row.goalDifference > 0 ? '+' : ''}${s.row.goalDifference})`} />
+                    </>
+                  ) : (
+                    <div style={{ ...type.small, color: T.faint }}>Not in this competition's table.</div>
+                  )}
+                </div>
+              ))}
+              {home && away && (
+                <div style={{ ...type.body, fontSize: 15, color: T.ink, paddingTop: 6 }}>
+                  {home.row.points === away.row.points
+                    ? `Level on ${home.row.points} points, separated by goal difference.`
+                    : `${home.row.points > away.row.points ? f.homeTeam : f.awayTeam} are ${Math.abs(home.row.points - away.row.points)} points better off, and ${Math.abs(home.row.position - away.row.position)} ${Math.abs(home.row.position - away.row.position) === 1 ? 'place' : 'places'} apart.`}
+                </div>
+              )}
+            </div>
+          )}
+        </CenterSection>
+
+        <CenterSection title="When they've met before">
+          {h2hMatches.length === 0 ? (
+            <div style={{ ...type.small, color: T.faint }}>
+              {f.h2h?.summary && f.h2h.summary !== 'Head-to-head data unavailable'
+                ? f.h2h.summary
+                : 'No head-to-head record came back for these two sides.'}
+            </div>
+          ) : (
+            <div>
+              <div style={{ ...type.body, fontSize: 15.5, color: T.ink }}>{f.h2h.summary}</div>
+              <div style={{ marginTop: 16 }}>
+                {h2hMatches.slice(0, 6).map((m, i) => {
+                  const hs = m.score?.fullTime?.home
+                  const as = m.score?.fullTime?.away
+                  return (
+                    <div key={m.id || i} style={{
+                      display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto 68px',
+                      gap: 10, alignItems: 'baseline', padding: '8px 0',
+                      borderBottom: i < Math.min(h2hMatches.length, 6) - 1 ? `1px solid ${T.line}` : 'none',
+                    }}>
+                      <span style={{ ...type.small, fontSize: 12.5, color: T.ink, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {m.homeTeam?.shortName || m.homeTeam?.name} v {m.awayTeam?.shortName || m.awayTeam?.name}
+                      </span>
+                      <span style={{ ...type.num, fontSize: 13, color: T.ink }}>
+                        {hs != null && as != null ? `${hs}–${as}` : '—'}
+                      </span>
+                      <span style={{ ...type.small, fontSize: 11.5, color: T.faint, textAlign: 'right' }}>
+                        {m.utcDate ? new Date(m.utcDate).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : ''}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </CenterSection>
+
+        <CenterSection title="What the market says">
+          <OddsMovement fixture={f} history={oddsHistory} />
+        </CenterSection>
+
+        {(f.matchday != null || (f.venue && f.venue !== 'TBC')) && (
+          <CenterSection title="Match details">
+            {f.competition && <StatRow label="Competition" value={f.competition} />}
+            {f.matchday != null && <StatRow label="Matchday" value={f.matchday} />}
+            {f.venue && f.venue !== 'TBC' && <StatRow label="Venue" value={f.venue} />}
+            {isFT && hasScore && <StatRow label="Final score" value={`${f.goalsHome}–${f.goalsAway}`} strong />}
+          </CenterSection>
+        )}
+
+        <div style={{ ...type.small, fontSize: 12, color: T.faint, textAlign: 'center', padding: '4px 0 12px' }}>
+          Everything on this page comes from football-data.org and the-odds-api.com.
+          Nothing here is estimated or filled in.
+        </div>
+      </div>
     </div>
   )
 }
@@ -3614,7 +4071,7 @@ function AboutScreen({ apiStatus, user, onSignOut, onOpenProfile }) {
           <Wordmark size={26} />
         </div>
         <div style={{ ...type.small, color: T.faint, marginTop: 14, lineHeight: 1.8 }}>
-          Data: football-data.org and the-odds-api.com · Analysis: Groq (llama-3.3-70b-versatile)<br />
+          Data: football-data.org and the-odds-api.com · Analysis: Groq ({GROQ_MODEL})<br />
           <a href={mailto('Privacy Policy Request')} style={{ color: T.sub }}>Privacy</a> · {' '}
           <a href={mailto('Terms of Service Request')} style={{ color: T.sub }}>Terms</a><br />
           © 2026 MatchIQ · Bright Agwunobi. This is analysis, not financial advice — bet only what
@@ -3770,7 +4227,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
 
   const [activeTab, setActiveTab] = useState('matches')
   const { apiStatus, apiHealth, setStatus, setHealth } = useApiHealth()
-  const { fixtures, fixturesLoading, fixturesError, loadFixtures, h2hCache, loadH2H } =
+  const { fixtures, fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H } =
     useFixtures({ setStatus, setHealth })
 
   const [diagOpen, setDiagOpen] = useState(() => readRaw(LS_DIAG_OPEN) !== '0')
@@ -3785,9 +4242,27 @@ function MatchIQ({ user, username, onUsernameChange }) {
   function clearCombo() { setComboSelections([]) }
 
   const [selected, setSelected] = useState(null)
+  const [center, setCenter] = useState(null)   // fixture shown in the Match Center
   const [analysis, setAnalysis] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+
+  /* First and latest price we've seen per fixture. The odds API hands back a
+   * snapshot, so this local record is the only honest basis for saying a line
+   * has moved — and it's why the Match Center says so explicitly on a first visit. */
+  const [oddsHist, setOddsHist] = useState(() => readJSON(LS_ODDS_HIST, {}))
+  useEffect(() => { writeJSON(LS_ODDS_HIST, oddsHist) }, [oddsHist])
+
+  function recordOdds(id, odds) {
+    if (!id || !odds || odds.home == null) return
+    setOddsHist(prev => {
+      const cur = prev[id]
+      const now = Date.now()
+      if (!cur) return { ...prev, [id]: { first: odds, firstAt: now, latest: odds, latestAt: now } }
+      if (cur.latest && cur.latest.home === odds.home && cur.latest.draw === odds.draw && cur.latest.away === odds.away) return prev
+      return { ...prev, [id]: { ...cur, latest: odds, latestAt: now } }
+    })
+  }
 
   const [analysisCache, setAnalysisCache] = useState(() => readJSON(LS_ANALYSIS, {}))
   const [tracked, setTracked] = useState(() => new Set(readJSON(LS_TRACKED, [])))
@@ -3795,7 +4270,11 @@ function MatchIQ({ user, username, onUsernameChange }) {
   useEffect(() => { writeJSON(LS_ANALYSIS, analysisCache) }, [analysisCache])
   useEffect(() => { writeJSON(LS_AGENT_PERF, agentPerf) }, [agentPerf])
 
-  // Auto-resolve finished fixtures against cached analyses
+  /* Auto-resolve finished fixtures against cached analyses.
+   * Watches analysisCache as well as fixtures: a match analysed *after* it had
+   * already finished used to never resolve, because the fixture list wasn't
+   * changing and nothing re-ran this pass. The `changed` guard keeps the added
+   * dependency from looping — a second pass finds every row already resolved. */
   useEffect(() => {
     if (!fixtures.length) return
     const byId = Object.fromEntries(fixtures.map(f => [f.id, f]))
@@ -3814,7 +4293,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
       }
     }
     if (changed) { setAnalysisCache(next); setAgentPerf(perf) }
-  }, [fixtures])
+  }, [fixtures, analysisCache])
 
   function resolveManual(id, correct) {
     setAnalysisCache(prev => {
@@ -3890,8 +4369,11 @@ function MatchIQ({ user, username, onUsernameChange }) {
       let lastMsg = null
       const results = await Promise.allSettled(
         ODDS_SPORTS.map(async (sport) => {
+          // Same trailing-slash trap as the football team-matches call: the
+          // vercel.json rewrite doesn't match `/odds/?…`, so this 404'd in
+          // production and left the odds cache empty on every load.
           const res = await fetch(
-            `/api/odds/v4/sports/${sport}/odds/?regions=uk&markets=h2h&oddsFormat=decimal`,
+            `/api/odds/v4/sports/${sport}/odds?regions=uk&markets=h2h&oddsFormat=decimal`,
           )
           const rem = res.headers.get('x-requests-remaining')
           if (rem != null) { lastRemaining = rem; console.log(`[odds-api] ${sport} x-requests-remaining:`, rem) }
@@ -3963,13 +4445,106 @@ function MatchIQ({ user, username, onUsernameChange }) {
     loadOdds()
   }, [])
 
+  /* -------- keeping status honest over time --------
+   * The mount fetch is only a snapshot. Without this the app happily shows a
+   * kick-off time for a match that finished an hour ago, and never resolves it.
+   *
+   * Every fixture the user has a stake in — followed or already analysed — is
+   * refreshed by id alongside anything currently live or due to have started.
+   * Fetching by id also brings back fixtures that have aged out of the date
+   * window, which is why a followed match no longer vanishes before full time.
+   *
+   * Cadence respects the 10 req/min free tier: 60s while something is live or
+   * overdue, 5 minutes otherwise, plus an immediate pass whenever the tab is
+   * brought back to the foreground (the common case on a phone). */
+  const refreshRef = useRef(refreshFixtures)
+  refreshRef.current = refreshFixtures
+
+  const watchIds = useMemo(() => {
+    const now = Date.now()
+    const ids = new Set()
+    for (const id of tracked) ids.add(Number(id))
+    for (const id of Object.keys(analysisCache)) ids.add(Number(id))
+    for (const f of fixtures) {
+      if (f.status === 'IN_PLAY' || f.status === 'LIVE') ids.add(Number(f.id))
+      // Past its kick-off but still marked as scheduled — the stale case.
+      else if (f.status === 'SCHEDULED' && f.kickoffDate && new Date(f.kickoffDate).getTime() < now) {
+        ids.add(Number(f.id))
+      }
+    }
+    return [...ids].filter(Boolean).sort()
+  }, [tracked, analysisCache, fixtures])
+
+  const watchKey = watchIds.join(',')
+  const urgent = useMemo(() => {
+    const now = Date.now()
+    return fixtures.some(f =>
+      f.status === 'IN_PLAY' || f.status === 'LIVE' ||
+      (f.status === 'SCHEDULED' && f.kickoffDate && new Date(f.kickoffDate).getTime() < now))
+  }, [fixtures])
+
+  useEffect(() => {
+    if (!watchKey) return
+    const ids = watchKey.split(',').map(Number)
+    const tick = () => { if (!document.hidden) refreshRef.current(ids) }
+    tick()
+    const id = setInterval(tick, urgent ? 60000 : 300000)
+    const onVisible = () => { if (!document.hidden) refreshRef.current(ids) }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => { clearInterval(id); document.removeEventListener('visibilitychange', onVisible) }
+  }, [watchKey, urgent])
+
+  /* The open match screen and match centre mirror the refreshed list, so a
+   * score that changes underneath doesn't leave one view contradicting another. */
+  useEffect(() => {
+    const sync = (cur, set) => {
+      if (!cur) return
+      const fresh = fixtures.find(f => f.id === cur.id)
+      if (!fresh) return
+      if (fresh.status === cur.status &&
+          fresh.goalsHome === cur.goalsHome &&
+          fresh.goalsAway === cur.goalsAway &&
+          fresh.homeFormDetail === cur.homeFormDetail) return
+      set(prev => prev && prev.id === fresh.id ? {
+        ...prev,
+        status: fresh.status, statusShort: fresh.statusShort,
+        goalsHome: fresh.goalsHome, goalsAway: fresh.goalsAway,
+        homeForm: fresh.homeForm, awayForm: fresh.awayForm,
+        homeFormDetail: fresh.homeFormDetail, awayFormDetail: fresh.awayFormDetail,
+      } : prev)
+    }
+    sync(selected, setSelected)
+    sync(center, setCenter)
+  }, [fixtures, selected, center])
+
   /* -------- selection + analysis -------- */
-  async function openFixture(fixture) {
+  /* Attaches the live odds and any cached head-to-head to a fixture, and logs
+   * the price so movement can be shown later. Shared by both entry points. */
+  function hydrate(fixture) {
     let f = fixture
     const found = lookupOddsForFixture(fixture, oddsCache)
-    if (found) f = { ...fixture, ...found }
+    if (found) { f = { ...fixture, ...found }; recordOdds(f.id, found.odds) }
     const cachedH2h = h2hCache[f.id]
     if (cachedH2h) f = { ...f, h2h: cachedH2h }
+    return { f, cachedH2h }
+  }
+
+  /* The Match Center. Tracking and opening are the same gesture, and it uses
+   * the existing `tracked` set rather than a second store. */
+  async function openCenter(fixture) {
+    const { f, cachedH2h } = hydrate(fixture)
+    setTracked(prev => prev.has(f.id) ? prev : new Set(prev).add(f.id))
+    setCenter(f)
+    window.scrollTo({ top: 0 })
+    if (!cachedH2h) {
+      const h2h = await loadH2H(f)
+      if (h2h) setCenter(prev => (prev && prev.id === f.id ? { ...prev, h2h } : prev))
+    }
+  }
+
+  async function openFixture(fixture) {
+    const { f, cachedH2h } = hydrate(fixture)
+    setCenter(null)
     setSelected(f)
     setError(null)
     window.scrollTo({ top: 0 })
@@ -3992,8 +4567,11 @@ function MatchIQ({ user, username, onUsernameChange }) {
   async function runAnalysis(fx) {
     setLoading(true); setError(null); setAnalysis(null)
     try {
+      // Standings for this competition go into the prompt as the quality
+      // baseline — position, points and the gap between the two sides.
+      const standings = standingsCache[fx.competitionCode] || null
       const res = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions',
+        GROQ_ENDPOINT,
         {
           method: 'POST',
           headers: {
@@ -4001,27 +4579,29 @@ function MatchIQ({ user, username, onUsernameChange }) {
             'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`,
           },
           body: JSON.stringify({
-            model: 'llama-3.3-70b-versatile',
+            model: GROQ_MODEL,
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: buildPrompt(fx) },
+              { role: 'user', content: buildPrompt(fx, { standings }) },
             ],
-            max_tokens: 1500,
-            temperature: 0.75,
-            top_p: 0.9,
+            response_format: { type: 'json_object' },
+            ...SYNTHESIS_PARAMS,
           }),
         },
       )
       const data = await res.json()
-      console.log('Groq response:', JSON.stringify(data, null, 2))
-      const raw = data.choices?.[0]?.message?.content || ''
-      const noThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
-      const noFences = noThink.replace(/```json|```/g, '').trim()
-      const first = noFences.indexOf('{')
-      const last = noFences.lastIndexOf('}')
-      if (first === -1 || last === -1) throw new Error('No JSON object found in model output')
-      const jsonSlice = noFences.slice(first, last + 1)
-      const parsed = JSON.parse(jsonSlice)
+      if (data.error) throw new Error(data.error.message || 'Groq rejected the request')
+      // A reasoning model spends most of its budget thinking; if the ceiling is
+      // hit the JSON arrives half-written, so name that rather than failing on parse.
+      if (data.choices?.[0]?.finish_reason === 'length') {
+        throw new Error('The model ran out of room before finishing its answer. Try again.')
+      }
+      const parsed = extractFirstJsonObject(data.choices?.[0]?.message?.content)
+      // Guard the one number the model is most prone to inventing: with no odds
+      // there is no market probability to compare against, so there is no edge.
+      if (parsed.recommendation && fx.odds?.home == null) {
+        parsed.recommendation.value_edge = 0
+      }
       parsed._ts = Date.now()
       parsed.kelly = calculateKelly(parsed, fx)
       parsed.fixtureId = fx.id
@@ -4061,13 +4641,27 @@ function MatchIQ({ user, username, onUsernameChange }) {
 
   function switchTab(t) {
     setActiveTab(t)
-    setSelected(null); setAnalysis(null); setError(null)
+    setSelected(null); setCenter(null); setAnalysis(null); setError(null)
     window.scrollTo({ top: 0 })
   }
 
   const liveCount = fixtures.filter(f => f.status === 'LIVE' || f.status === 'IN_PLAY').length
 
   function renderTab() {
+    if (center) {
+      return (
+        <MatchCenter
+          fixture={center}
+          analysis={analysisCache[center.id]}
+          standings={standingsCache[center.competitionCode] || null}
+          oddsHistory={oddsHist[center.id]}
+          onBack={() => setCenter(null)}
+          onOpenAnalysis={() => { setCenter(null); openFixture(center) }}
+          tracked={tracked.has(center.id)}
+          onToggleTrack={toggleTracked}
+        />
+      )
+    }
     if (selected) {
       return (
         <MatchDetail
@@ -4077,6 +4671,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
           onAnalyze={() => runAnalysis(selected)}
           tracked={tracked.has(selected.id)}
           onToggleTrack={toggleTracked}
+          onOpenCenter={openCenter}
         />
       )
     }
@@ -4098,7 +4693,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
     if (activeTab === 'following') return (
       <FollowingScreen
         fixtures={fixtures} tracked={tracked} analysisCache={analysisCache}
-        onOpen={openFixture} onToggleTrack={toggleTracked}
+        onOpen={openCenter} onToggleTrack={toggleTracked}
         onGoMatches={() => switchTab('matches')} onResolve={resolveManual}
       />
     )
@@ -4122,7 +4717,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
     return null
   }
 
-  const screenKey = selected ? `match-${selected.id}` : activeTab
+  const screenKey = center ? `center-${center.id}` : selected ? `match-${selected.id}` : activeTab
 
   return (
     <div data-theme={theme} style={{ minHeight: '100dvh', position: 'relative', zIndex: 1 }}>

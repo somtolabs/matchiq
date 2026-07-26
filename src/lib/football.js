@@ -53,10 +53,33 @@ export function mapMatch(item) {
     statusShort: item.status,
     goalsHome,
     goalsAway,
+    matchday: item.matchday ?? null,
     competition: compName,
     competitionId: compCode,
     competitionCode: compCode,
     region,
+  }
+}
+
+/* One finished match from a team's point of view: result, goals for/against,
+ * whether it was home or away, and who the opponent was. Null if incomplete.
+ * This is what lets the prompt reason from goals rather than W/D/L letters. */
+export function formDetailForTeam(match, teamId) {
+  const home = match.score?.fullTime?.home
+  const away = match.score?.fullTime?.away
+  if (home == null || away == null) return null
+  const isHome = match.homeTeam?.id === teamId
+  const gf = isHome ? home : away
+  const ga = isHome ? away : home
+  const oppRaw = isHome ? match.awayTeam : match.homeTeam
+  return {
+    result: gf > ga ? 'W' : gf < ga ? 'L' : 'D',
+    gf, ga,
+    venue: isHome ? 'H' : 'A',
+    opponent: oppRaw?.shortName || oppRaw?.name || null,
+    opponentId: oppRaw?.id || null,
+    date: match.utcDate ? match.utcDate.slice(0, 10) : null,
+    competition: match.competition?.name || null,
   }
 }
 
