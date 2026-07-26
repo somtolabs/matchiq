@@ -22,6 +22,12 @@ export const LS_FIXTURES_CACHE = 'matchiq_fixtures_cache'
 export const LS_FORM_CACHE     = 'matchiq_form_cache'
 export const LS_COMP_CACHE     = 'matchiq_comp_cache'
 
+/* Per-team NewsAPI results, keyed by search phrase. Six hours, because the free
+ * plan allows only 100 requests/day and its articles already carry a 24-hour
+ * delay — refetching sooner would spend quota to receive the same articles. */
+export const LS_NEWS_CACHE = 'matchiq_news_cache'
+export const NEWS_TTL_MS = 6 * 60 * 60 * 1000
+
 export const FIXTURES_TTL_MS = 3 * 60 * 1000
 export const FORM_TTL_MS     = 6 * 60 * 60 * 1000
 export const COMP_TTL_MS     = 6 * 60 * 60 * 1000

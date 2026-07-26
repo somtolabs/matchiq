@@ -12,6 +12,7 @@ import {
   delay, readJSON, writeJSON, readRaw, writeRaw,
 } from './lib/storage.js'
 import { footballFetch } from './lib/football.js'
+import { getFixtureNews, getHeadlines, relativeTime } from './lib/news.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
 import { GROQ_MODEL, GROQ_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject } from './lib/groq.js'
 import {
@@ -500,6 +501,42 @@ function Eyebrow({ children, style }) {
   return <div style={{ ...type.eyebrow, ...style }}>{children}</div>
 }
 
+/* One news row, and one list — shared by the homepage strip and the Recent
+ * Headlines section on a verdict, so there is a single implementation of how an
+ * article looks. Real source, real relative time from the article's own
+ * publishedAt, real outbound link using the app's existing external-link pattern.
+ * Never renders a placeholder: callers decide not to render at all. */
+function NewsRow({ article, label }) {
+  const inner = (
+    <>
+      <div style={{ ...type.small, color: T.ink, fontWeight: 560, lineHeight: 1.4 }}>
+        {article.title}
+      </div>
+      <div style={{ ...type.small, color: T.faint, marginTop: 5, fontSize: 12.5 }}>
+        {label ? `${label} · ` : ''}{article.source} · {relativeTime(article.publishedAt)}
+      </div>
+    </>
+  )
+  const boxStyle = {
+    display: 'block', textDecoration: 'none', background: T.card2,
+    borderRadius: 14, padding: '13px 16px', color: T.ink,
+  }
+  // Only a real URL becomes a link; an article without one still renders honestly.
+  return article.url
+    ? <a href={article.url} target="_blank" rel="noopener noreferrer" className="iq-lift" style={boxStyle}>{inner}</a>
+    : <div style={boxStyle}>{inner}</div>
+}
+
+function NewsList({ items }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
+      {items.map((it, i) => (
+        <NewsRow key={`${it.article.url || it.article.title}-${i}`} article={it.article} label={it.label} />
+      ))}
+    </div>
+  )
+}
+
 function Button({ children, onClick, kind = 'primary', style, disabled }) {
   const kinds = {
     primary: { background: T.accent, color: T.accentInk, border: '1px solid transparent', boxShadow: T.glow },
@@ -919,10 +956,31 @@ function useCountdown(until) {
   return Math.max(0, Math.ceil((until - now) / 1000))
 }
 
+/* General football headlines on the homepage.
+ *
+ * The 30-minute window is enforced at the CDN by /api/news (s-maxage=1800), not
+ * per browser: every visitor inside a window is served the one cached response,
+ * so homepage traffic — which will always dwarf the number of analyses run —
+ * costs at most 48 NewsAPI requests a day no matter how many people load it.
+ *
+ * Renders nothing at all when the list is empty or the refresh failed. There is
+ * no placeholder and no fallback copy: an absent strip is the honest state. */
+function NewsStrip({ articles }) {
+  if (!articles?.length) return null
+  return (
+    <Reveal delay={0.06}>
+      <Card style={{ padding: 28, marginTop: 26 }}>
+        <Eyebrow>Around football</Eyebrow>
+        <NewsList items={articles.map(a => ({ article: a }))} />
+      </Card>
+    </Reveal>
+  )
+}
+
 function MatchesScreen({
   fixtures, fixturesLoading, fixturesError, onRetry, rateLimitedUntil,
   analysisCache, tracked, onOpen, onToggleTrack,
-  standingsCache, scorersCache, compDetailsCache,
+  standingsCache, scorersCache, compDetailsCache, headlines,
 }) {
   const [view, setView] = useState('fixtures') // 'fixtures' | 'tables'
   const [comp, setComp] = useState('all')
@@ -1112,6 +1170,8 @@ function MatchesScreen({
       <Reveal delay={0.04}>
         <div style={{ height: 1, background: T.line, margin: isMobile ? '28px 0 4px' : '40px 0 8px' }} />
       </Reveal>
+
+      <NewsStrip articles={headlines} />
 
       {/* View toggle */}
       <Reveal delay={0.06}>
@@ -1780,6 +1840,8 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
         </details>
       </Reveal>
 
+      <RecentHeadlines fixture={fx} news={data.news} />
+
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         gap: 12, flexWrap: 'wrap', padding: '4px 4px 12px',
@@ -1790,6 +1852,38 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
         {onReRun && <Button kind="ghost" onClick={onReRun} disabled={busy} style={{ padding: '8px 18px', fontSize: 13 }}>Read it again</Button>}
       </div>
     </div>
+  )
+}
+
+/* The headlines that were actually in front of the model when it wrote this
+ * verdict — the same articles carried on the analysis by runAnalysis, not a
+ * second fetch. Rendered nowhere if the analysis predates this feature
+ * (`news` undefined), and stated plainly when the search genuinely found
+ * nothing. Nothing here is ever filled in to look complete. */
+function RecentHeadlines({ fixture, news }) {
+  if (!news) return null
+  const items = [
+    ...(news.home || []).map(a => ({ article: a, label: fixture.homeTeam })),
+    ...(news.away || []).map(a => ({ article: a, label: fixture.awayTeam })),
+  ]
+  return (
+    <Reveal>
+      <Card style={{ padding: 28, marginBottom: 18 }}>
+        <Eyebrow>Recent headlines</Eyebrow>
+        {items.length === 0 ? (
+          <div style={{ ...type.small, marginTop: 12 }}>
+            No recent headlines found for either team.
+          </div>
+        ) : (
+          <>
+            <div style={{ ...type.small, color: T.faint, marginTop: 10, fontSize: 12.5 }}>
+              Unverified coverage, used as loose context only — not team news.
+            </div>
+            <NewsList items={items} />
+          </>
+        )}
+      </Card>
+    </Reveal>
   )
 }
 
@@ -4265,6 +4359,25 @@ function MatchIQ({ user, username, onUsernameChange }) {
    * from localStorage so a reload inside the TTL spends no quota. */
   const oddsStoreRef = useRef(readOddsStore())
 
+  /* General football headlines for the homepage strip. Empty until the first
+   * response lands, and left empty on failure so NewsStrip renders nothing at
+   * all rather than a placeholder. The 30-minute window that keeps this off the
+   * quota is enforced by the CDN in /api/news, not here — this interval simply
+   * asks again once the window has rolled, and a long-lived tab is the only case
+   * where it matters. */
+  const [headlines, setHeadlines] = useState([])
+  useEffect(() => {
+    let cancelled = false
+    const load = () => {
+      getHeadlines(10).then(({ articles }) => {
+        if (!cancelled) setHeadlines(articles)
+      })
+    }
+    load()
+    const id = setInterval(load, 30 * 60 * 1000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+
   const [standingsCache, setStandingsCache] = useState({})
   const [scorersCache, setScorersCache] = useState({})
   const [compDetailsCache, setCompDetailsCache] = useState({})
@@ -4725,6 +4838,12 @@ function MatchIQ({ user, username, onUsernameChange }) {
       // Standings for this competition go into the prompt as the quality
       // baseline — position, points and the gap between the two sides.
       const standings = standingsCache[fx.competitionCode] || null
+      /* Team news is fetched here and only here — at the moment of analysis,
+       * never for a whole fixture list. The free plan allows 100 requests/day,
+       * so preloading even one day's card would exhaust it. Per-team results are
+       * cached for six hours, so a team appearing in several analyses this
+       * afternoon costs one request. Failure returns empty and is never fatal. */
+      const news = await getFixtureNews(fx)
       const res = await fetch(
         GROQ_ENDPOINT,
         {
@@ -4737,7 +4856,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
             model: GROQ_MODEL,
             messages: [
               { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: buildPrompt(fx, { standings }) },
+              { role: 'user', content: buildPrompt(fx, { standings, news }) },
             ],
             response_format: { type: 'json_object' },
             ...SYNTHESIS_PARAMS,
@@ -4758,6 +4877,11 @@ function MatchIQ({ user, username, onUsernameChange }) {
         parsed.recommendation.value_edge = 0
       }
       parsed._ts = Date.now()
+      /* The exact articles that went into the prompt, carried on the analysis so
+       * the Recent Headlines section renders from this data rather than fetching
+       * it a second time. Persisted with the analysis, so re-opening the verdict
+       * shows the same headlines the model actually saw. */
+      parsed.news = { home: news.home, away: news.away, fetchedAt: news.fetchedAt }
       parsed.kelly = calculateKelly(parsed, fx)
       parsed.fixtureId = fx.id
       parsed.competitionCode = fx.competitionCode
@@ -4851,6 +4975,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
         analysisCache={analysisCache} tracked={tracked}
         onOpen={openFixture} onToggleTrack={toggleTracked}
         standingsCache={standingsCache} scorersCache={scorersCache} compDetailsCache={compDetailsCache}
+        headlines={headlines}
       />
     )
     if (activeTab === 'bets') return (

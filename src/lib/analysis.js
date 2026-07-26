@@ -46,13 +46,16 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis) {
    * immediately guarantees a rate-limit rejection and an empty goals panel.
    * They're background enrichment — waiting is free, failing isn't.
    *
-   * Measured against the account: the main read is counted at ~5,840 tokens up
-   * front (prompt + max_tokens, with standings), and this first call adds ~2,083,
-   * so an immediate fire lands at ~7,923 inside the 8,000/min window. It fits,
-   * but with under 1% headroom — worth knowing before anything lengthens the
-   * main prompt. */
+   * The first call waits too, which it previously did not, and this is now
+   * measured rather than assumed. Before the news context existed the main read
+   * was counted at ~5,840 tokens up front (prompt + max_tokens) and this call
+   * added ~2,083, landing at ~7,923 — inside the 8,000/min window by under 1%.
+   * The RECENT NEWS CONTEXT block adds ~211 prompt tokens, which takes the same
+   * pair to ~8,219: over the ceiling. Firing immediately would now reliably 429,
+   * and that failure is swallowed and shows up as a silently missing goals panel.
+   * Timing only — model, params and prompts are untouched. */
   const results = await Promise.allSettled(markets.map(async (market, i) => {
-    if (i > 0) await new Promise(r => setTimeout(r, i * 25000))
+    await new Promise(r => setTimeout(r, (i + 1) * 25000))
     const res = await fetch(GROQ_ENDPOINT, {
       method: 'POST',
       headers: {
