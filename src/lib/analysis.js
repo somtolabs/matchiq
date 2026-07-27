@@ -37,10 +37,13 @@ export function calculateKelly(analysis, fixture) {
   }
 }
 
-export async function runMultiMarketAnalysis(fixture, mainAnalysis) {
+/* `context` carries the same standings payload the main synthesis call is given.
+ * It is passed in rather than fetched: the caller already holds it, and these
+ * agents must reason from exactly the data the main read used, not a subset. */
+export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}) {
   const markets = [
-    { key: 'over_under', label: 'Over/Under 2.5 Goals', prompt: buildOverUnderPrompt(fixture, mainAnalysis) },
-    { key: 'btts', label: 'Both Teams to Score', prompt: buildBTTSPrompt(fixture, mainAnalysis) },
+    { key: 'over_under', label: 'Over/Under 2.5 Goals', prompt: buildOverUnderPrompt(fixture, mainAnalysis, context) },
+    { key: 'btts', label: 'Both Teams to Score', prompt: buildBTTSPrompt(fixture, mainAnalysis, context) },
   ]
   /* Staggered rather than parallel. The main read has just spent most of the
    * account's 8,000 tokens-per-minute allowance, so firing both of these
@@ -54,7 +57,18 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis) {
    * The RECENT NEWS CONTEXT block adds ~211 prompt tokens, which takes the same
    * pair to ~8,219: over the ceiling. Firing immediately would now reliably 429,
    * and that failure is swallowed and shows up as a silently missing goals panel.
-   * Timing only — model, params and prompts are untouched. */
+   * Timing only — model, params and prompts are untouched.
+   *
+   * Re-measured against the live API after the standings/H2H/odds data was wired
+   * into these prompts (Internacional v Flamengo, real payloads): main read
+   * prompt 2,811 + max_tokens 3,600 = 6,411; each market call 674 + 1,800 =
+   * 2,474, up ~160 prompt tokens from before. Both market calls were accepted on
+   * this same 25s/50s stagger with no 429, so the timing is left alone. Worth
+   * knowing that the reserve arithmetic above is conservative: 6,411 + 2,474
+   * inside one minute exceeds 8,000 on paper and was still accepted, so Groq is
+   * evidently not reserving the full max_tokens the way this comment assumed.
+   * The stagger stays because it is cheap insurance, not because that sum is
+   * exact. */
   const results = await Promise.allSettled(markets.map(async (market, i) => {
     await new Promise(r => setTimeout(r, (i + 1) * 25000))
     const res = await fetch(GROQ_ENDPOINT, {

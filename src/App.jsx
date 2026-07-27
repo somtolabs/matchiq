@@ -5208,7 +5208,10 @@ function MatchIQ({ user, username, onUsernameChange }) {
        * second pair of goals-market calls on top of the first. */
       if (!marketInFlightRef.current.has(fx.id)) {
         marketInFlightRef.current.add(fx.id)
-        runMultiMarketAnalysis(fx, parsed).then(multi => {
+        // Same `standings` object buildPrompt received above — the goals-market
+        // agents were previously the only ones without it, which is why they
+        // reported "no data" for teams the main read had full season stats for.
+        runMultiMarketAnalysis(fx, parsed, { standings }).then(multi => {
           if (multi && multi.length) {
             const enriched = { ...parsed, multiMarket: multi }
             setAnalysis(a => a && a.fixtureId === fx.id ? enriched : a)

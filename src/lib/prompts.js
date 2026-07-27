@@ -1,5 +1,7 @@
-/* Agent instruction content. Relocated verbatim from App.jsx — the wording of
- * SYSTEM_PROMPT, MARKET_SYSTEM_PROMPT and every prompt builder is unchanged. */
+/* Agent instruction content, relocated from App.jsx. SYSTEM_PROMPT and
+ * buildPrompt are still verbatim; MARKET_SYSTEM_PROMPT and the two goals-market
+ * builders were revised so they read the same standings, head-to-head and odds
+ * data the main synthesis call gets, instead of a narrower slice. */
 
 import { newsPromptBlock } from './news.js'
 
@@ -302,7 +304,9 @@ Respond with the JSON schema only.`
 export const MARKET_SYSTEM_PROMPT = `You are a football betting market analyst specializing in goals markets.
 Respond ONLY with valid JSON. No markdown, no code fences, no prose.
 
-You do not have access to injury reports or team news. Do not speculate about specific players, injuries, or lineup changes. Reason only from the goal and form data provided. Where that data does not clearly favour one side of the line, say so and set a confidence below 0.55 rather than forcing a confident call.
+You do not have access to injury reports or team news. Do not speculate about specific players, injuries, or lineup changes. Reason only from the goals, form, standings, head-to-head and market data provided. Where that data does not clearly favour one side of the line, say so and set a confidence below 0.55 rather than forcing a confident call.
+
+Never describe data as missing unless the brief explicitly says so for that specific team and source. The brief names what is unavailable; anything it does not name is present, and you must reason from it rather than claiming an absence.
 
 Schema:
 {
@@ -314,25 +318,72 @@ Schema:
   "confidence_label": "low | medium | medium-high | high"
 }`
 
-/* Per-match goal detail is the real source here; season totals from the
- * standings are the fallback. Only says "unavailable" when both are missing. */
-function goalsProfile(detail, season) {
+/* Season-long goal record, read from the same football-data standings payload
+ * the main synthesis prompt is given. This used to read `fixture.homeSeason` —
+ * a zero-filled placeholder mapMatch created and nothing ever populated — so
+ * whenever per-match form detail was missing this fell through to
+ * "goal data unavailable" while the main prompt, which does get the standings,
+ * was reasoning from that same team's points, goals for/against and goal
+ * difference. That is the contradiction this fixes. */
+function seasonGoalsLine(standings, teamId) {
+  const s = standingsRowFor(standings, teamId)
+  const r = s?.row
+  if (!r || !r.playedGames) return null
+  const gd = `${r.goalDifference > 0 ? '+' : ''}${r.goalDifference}`
+  return `season: ${(r.goalsFor / r.playedGames).toFixed(2)} scored, ${(r.goalsAgainst / r.playedGames).toFixed(2)} conceded per game over ${r.playedGames} league games (${r.goalsFor} for, ${r.goalsAgainst} against, GD ${gd}); ${r.points} pts, ${r.position} of ${s.size}`
+}
+
+/* Recent per-match detail and the season record are complements, not fallbacks
+ * — the goals markets want both the current run and the baseline. Each line is
+ * emitted only if its data really exists, so any "not available" note is
+ * specific to the team and source that is genuinely missing. */
+function goalsProfile(detail, standings, teamId) {
+  const parts = []
   if (Array.isArray(detail) && detail.length) {
     const gf = detail.reduce((s, m) => s + (m.gf || 0), 0)
     const ga = detail.reduce((s, m) => s + (m.ga || 0), 0)
     const over = detail.filter(m => (m.gf || 0) + (m.ga || 0) > 2.5).length
     const btts = detail.filter(m => (m.gf || 0) > 0 && (m.ga || 0) > 0).length
-    return `${(gf / detail.length).toFixed(2)} scored, ${(ga / detail.length).toFixed(2)} conceded per match over the last ${detail.length}; ${over} of those ${detail.length} went over 2.5 total goals; both teams scored in ${btts} of them`
+    parts.push(`last ${detail.length}: ${(gf / detail.length).toFixed(2)} scored, ${(ga / detail.length).toFixed(2)} conceded per match; ${over} of ${detail.length} went over 2.5 total goals; both teams scored in ${btts}`)
   }
-  if (season && season.played > 0) {
-    return `${(season.gf / season.played).toFixed(2)} scored, ${(season.ga / season.played).toFixed(2)} conceded per match across ${season.played} league games`
-  }
-  return 'goal data unavailable'
+  const season = seasonGoalsLine(standings, teamId)
+  if (season) parts.push(season)
+  if (!parts.length) return 'no goal data available for this team'
+  return parts.join('\n    ')
 }
 
-export function buildOverUnderPrompt(f, main) {
-  const formStr = (arr) => Array.isArray(arr) && arr.length ? arr.join(' ') : 'no recent log'
-  const seasonGoals = (s, detail) => goalsProfile(detail, s)
+/* Head-to-head read purely as a goals signal: how many of these specific
+ * meetings cleared 2.5 and how many had both teams score.
+ * regularTime is preferred over fullTime for the same reason settlementScore
+ * prefers it — football-data folds a shootout into fullTime, which would show
+ * a 1-1 as a 6-4 and make a tight fixture look like a goal fest. */
+function h2hGoalsLine(f) {
+  const matches = (f.h2h?.matches || []).slice(0, 5)
+  const rows = []
+  for (const m of matches) {
+    const reg = m.score?.regularTime
+    const hs = (reg?.home ?? m.score?.fullTime?.home ?? m.homeScore)
+    const as = (reg?.away ?? m.score?.fullTime?.away ?? m.awayScore)
+    if (hs == null || as == null) continue
+    rows.push({ hs, as })
+  }
+  if (!rows.length) return 'Head-to-head goal history not available'
+  const over = rows.filter(r => r.hs + r.as > 2.5).length
+  const btts = rows.filter(r => r.hs > 0 && r.as > 0).length
+  const total = rows.reduce((s, r) => s + r.hs + r.as, 0)
+  return `Last ${rows.length} meetings: ${rows.map(r => `${r.hs}-${r.as}`).join(', ')} — ${(total / rows.length).toFixed(2)} goals per meeting; ${over} over 2.5; both scored in ${btts}`
+}
+
+/* The 1X2 line is not a goals market, but it prices how one-sided the match is
+ * expected to be, which the model should weigh rather than guess at. */
+function matchOddsLine(f) {
+  if (!f.odds?.home) return 'Match odds not available'
+  return `Home ${f.odds.home} | Draw ${f.odds.draw} | Away ${f.odds.away}`
+}
+
+export function buildOverUnderPrompt(f, main, context = {}) {
+  const standings = context.standings || null
+  const formStr = (arr) => Array.isArray(arr) && arr.length ? arr.join(' ') : 'recent match log not available'
   return `MARKET: OVER/UNDER 2.5 GOALS
 
 FIXTURE
@@ -343,8 +394,16 @@ ${f.homeTeam}: ${formStr(f.homeForm)}
 ${f.awayTeam}: ${formStr(f.awayForm)}
 
 GOALS PROFILE
-${f.homeTeam}: ${seasonGoals(f.homeSeason, f.homeFormDetail)}
-${f.awayTeam}: ${seasonGoals(f.awaySeason, f.awayFormDetail)}
+${f.homeTeam}:
+    ${goalsProfile(f.homeFormDetail, standings, f.homeTeamId)}
+${f.awayTeam}:
+    ${goalsProfile(f.awayFormDetail, standings, f.awayTeamId)}
+
+HEAD TO HEAD
+${h2hGoalsLine(f)}
+
+MARKET
+${matchOddsLine(f)}
 
 MAIN ANALYSIS CONTEXT
 Pick: ${main?.recommendation?.pick || 'unknown'} at ${Math.round((main?.recommendation?.confidence || 0) * 100)}% confidence
@@ -352,9 +411,9 @@ Pick: ${main?.recommendation?.pick || 'unknown'} at ${Math.round((main?.recommen
 Predict whether total goals will be OVER or UNDER 2.5. Respond with the JSON schema exactly.`
 }
 
-export function buildBTTSPrompt(f, main) {
-  const formStr = (arr) => Array.isArray(arr) && arr.length ? arr.join(' ') : 'no recent log'
-  const cleanSheets = (s, detail) => goalsProfile(detail, s)
+export function buildBTTSPrompt(f, main, context = {}) {
+  const standings = context.standings || null
+  const formStr = (arr) => Array.isArray(arr) && arr.length ? arr.join(' ') : 'recent match log not available'
   return `MARKET: BOTH TEAMS TO SCORE
 
 FIXTURE
@@ -365,8 +424,16 @@ ${f.homeTeam}: ${formStr(f.homeForm)}
 ${f.awayTeam}: ${formStr(f.awayForm)}
 
 DEFENSIVE PROFILE
-${f.homeTeam}: ${cleanSheets(f.homeSeason, f.homeFormDetail)}
-${f.awayTeam}: ${cleanSheets(f.awaySeason, f.awayFormDetail)}
+${f.homeTeam}:
+    ${goalsProfile(f.homeFormDetail, standings, f.homeTeamId)}
+${f.awayTeam}:
+    ${goalsProfile(f.awayFormDetail, standings, f.awayTeamId)}
+
+HEAD TO HEAD
+${h2hGoalsLine(f)}
+
+MARKET
+${matchOddsLine(f)}
 
 MAIN ANALYSIS CONTEXT
 Pick: ${main?.recommendation?.pick || 'unknown'} at ${Math.round((main?.recommendation?.confidence || 0) * 100)}% confidence

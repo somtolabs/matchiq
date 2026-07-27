@@ -130,8 +130,11 @@ export function mapMatch(item) {
       : kickoffDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }),
     homeForm: [],
     awayForm: [],
-    homeSeason: { played: 0, won: 0, drawn: 0, lost: 0, gf: 0, ga: 0 },
-    awaySeason: { played: 0, won: 0, drawn: 0, lost: 0, gf: 0, ga: 0 },
+    /* No homeSeason/awaySeason here. Zero-filled placeholders used to sit on this
+     * object and nothing ever populated them; the goals-market prompt read them,
+     * saw played === 0 and reported "goal data unavailable" for teams whose real
+     * season record was sitting in the standings all along. Season stats now come
+     * from the standings payload, which is the only place they actually exist. */
     h2h: { summary: 'Head-to-head data unavailable', lastMeeting: 'Unavailable' },
     odds: { home: null, draw: null, away: null },
     marketMovement: 'Fetching live odds on selection',
