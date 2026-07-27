@@ -224,6 +224,30 @@ export function matchScore(f) {
   return plain
 }
 
+/* The score a 1X2 prediction should be settled on: ninety minutes plus stoppage,
+ * excluding extra time and penalties.
+ *
+ * Deliberately NOT matchScore(). That one exists to *display* what happened, so
+ * for a match decided in extra time it reports 2–1 — correct on the pitch, wrong
+ * for settlement. Our picks are home_win/draw/away_win measured against h2h odds
+ * from the Odds API, and those are ninety-minute markets, so the edge was priced
+ * against regular time and must be graded against regular time.
+ *
+ * England v Slovakia is the clean illustration: 1–1 at ninety, England won 2–1 in
+ * extra time. A 1X2 bet on England loses. Grading it a home win would mark a
+ * losing pick correct.
+ *
+ * football-data only populates `regularTime` when a match went beyond ninety
+ * minutes; for an ordinary match `fullTime` already IS the ninety-minute score.
+ * So the fallback is exact, not a guess. */
+export function settlementScore(f) {
+  const reg = f?.regularTime
+  if (reg && reg.home != null && reg.away != null) {
+    return { home: reg.home, away: reg.away, basis: 'regularTime' }
+  }
+  return { home: f?.goalsHome ?? null, away: f?.goalsAway ?? null, basis: 'fullTime' }
+}
+
 /* One finished match from a team's point of view: result, goals for/against,
  * whether it was home or away, and who the opponent was. Null if incomplete.
  * This is what lets the prompt reason from goals rather than W/D/L letters. */

@@ -2,6 +2,7 @@
  * The Groq endpoint and auth header pattern are unchanged. */
 
 import { GROQ_MODEL, GROQ_ENDPOINT, AGENT_PARAMS, extractFirstJsonObject } from './groq.js'
+import { settlementScore, matchScore } from './football.js'
 import {
   MARKET_SYSTEM_PROMPT,
   buildOverUnderPrompt,
@@ -104,21 +105,36 @@ export function updateAgentPerformance(prev, analysis) {
   return next
 }
 
+/* Graded on the ninety-minute score, not football-data's `fullTime`.
+ *
+ * `fullTime` sums a shootout into the scoreline — Portugal 0–0 Slovenia arrives
+ * as 3–0, England 1–1 Switzerland as 6–4 — so reading it directly graded picks
+ * against a scoreline that never happened, and in some cases named the wrong
+ * winner outright (CD Tolima 0–1 Táchira arrived as 3–1). Extra time is excluded
+ * for the same reason the odds are: h2h markets settle at ninety minutes.
+ *
+ * The score shown to the user still comes from matchScore(), which reports what
+ * actually happened on the pitch. This is only the settlement basis. */
 export function autoResolve(analysis, fixture) {
   if (!analysis || analysis.resolved) return null
   if (fixture?.status !== 'FINISHED') return null
-  const home = fixture.goalsHome
-  const away = fixture.goalsAway
+  const settle = settlementScore(fixture)
+  const home = settle.home
+  const away = settle.away
   if (home == null || away == null) return null
   const actualResult = home > away ? 'home_win' : away > home ? 'away_win' : 'draw'
   const correct = analysis.recommendation?.pick === actualResult
+  const shown = matchScore(fixture)
   return {
     ...analysis,
     resolved: true,
     autoResolved: true,
     actualResult,
     correct,
-    finalScore: `${home} – ${away}`,
+    // What happened, for display; `actualResult` above is what it settled on.
+    finalScore: `${shown.home} – ${shown.away}`,
+    settledOn: `${home} – ${away}`,
+    settlementBasis: settle.basis,
     resolvedAt: Date.now(),
   }
 }
