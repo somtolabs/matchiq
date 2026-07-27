@@ -6,6 +6,7 @@
     { "source": "/api/football/:path*", "destination": "/api/football?path=:path*" },
     { "source": "/api/odds/:path*",     "destination": "/api/odds?path=:path*" },
     { "source": "/api/news/:path*",     "destination": "/api/news?path=:path*" },
+    { "source": "/api/matchevents/:path*", "destination": "/api/matchevents?path=:path*" },
     { "source": "/((?!api/).*)",        "destination": "/index.html" }
   ],
   "headers": [

@@ -28,6 +28,15 @@ export const LS_COMP_CACHE     = 'matchiq_comp_cache'
 export const LS_NEWS_CACHE = 'matchiq_news_cache'
 export const NEWS_TTL_MS = 6 * 60 * 60 * 1000
 
+/* Post-match goal scorers from API-Football, keyed by football-data fixture id.
+ * Deliberately no TTL: a finished match's goals never change, and a match that
+ * has aged out of the free plan's ~48h window will never come back into it. */
+export const LS_GOALS_CACHE = 'matchiq_goals_cache'
+/* The date→fixture-list lookup that maps a football-data fixture onto its
+ * API-Football id. Shared by every match on that date. */
+export const LS_AFDATE_CACHE = 'matchiq_afdate_cache'
+export const AFDATE_TTL_MS = 15 * 60 * 1000
+
 export const FIXTURES_TTL_MS = 3 * 60 * 1000
 export const FORM_TTL_MS     = 6 * 60 * 60 * 1000
 export const COMP_TTL_MS     = 6 * 60 * 60 * 1000

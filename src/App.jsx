@@ -13,6 +13,7 @@ import {
 } from './lib/storage.js'
 import { footballFetch } from './lib/football.js'
 import { getFixtureNews, getHeadlines, relativeTime } from './lib/news.js'
+import { getMatchGoals, formatMinute } from './lib/matchevents.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
 import { GROQ_MODEL, GROQ_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject } from './lib/groq.js'
 import {
@@ -20,7 +21,7 @@ import {
   edgeToOutcome, AGENT_PERF_EMPTY,
 } from './lib/analysis.js'
 import {
-  lookupOddsForFixture, sportKeysForFixtures, readOddsStore, writeOddsStore,
+  lookupOddsForFixture, sportKeysForFixtures, readOddsStore, writeOddsStore, nameScore,
   planOddsFetch, eventsForKeys,
 } from './lib/odds.js'
 import { useApiHealth } from './hooks/useApiHealth.js'
@@ -2237,6 +2238,111 @@ function OddsMovement({ fixture: f, history }) {
   )
 }
 
+/* Real goal scorers for a finished match, from API-Football's events endpoint.
+ *
+ * Fetched here and nowhere else — on opening one specific match, never across a
+ * fixture list. The free plan allows 100 requests a day, so preloading even one
+ * day's card would spend a fifth of it before anyone asked for anything.
+ *
+ * Renders nothing at all while loading or when the match isn't finished. When
+ * the data genuinely isn't retrievable it says so plainly instead of leaving an
+ * empty section — most often because the match has aged out of the free plan's
+ * ~48-hour window, which was measured directly against the API. */
+function GoalsSection({ fixture }) {
+  const [state, setState] = useState({ loading: true, goals: [], unavailable: null })
+
+  useEffect(() => {
+    if (fixture.status !== 'FINISHED') { setState({ loading: false, goals: [], unavailable: 'notfinished' }); return }
+    let cancelled = false
+    setState({ loading: true, goals: [], unavailable: null })
+    getMatchGoals(fixture).then(r => {
+      if (!cancelled) setState({
+        loading: false, goals: r.goals || [], unavailable: r.unavailable || null,
+        homeTeamId: r.homeTeamId ?? null, awayTeamId: r.awayTeamId ?? null,
+      })
+    })
+    return () => { cancelled = true }
+  }, [fixture.id, fixture.status])
+
+  if (fixture.status !== 'FINISHED') return null
+  if (state.loading) return null
+
+  const { goals, unavailable } = state
+  // A goalless draw is a real answer; anything else with no goals is not.
+  const goalless = !unavailable && goals.length === 0 &&
+    fixture.goalsHome === 0 && fixture.goalsAway === 0
+
+  if (unavailable || (goals.length === 0 && !goalless)) {
+    return (
+      <CenterSection title="Goals">
+        <div style={{ ...type.small, color: T.faint }}>
+          Goal details unavailable for this match.
+          {unavailable === 'window' && ' Our events provider only covers the last couple of days.'}
+        </div>
+      </CenterSection>
+    )
+  }
+
+  if (goalless) {
+    return (
+      <CenterSection title="Goals">
+        <div style={{ ...type.small, color: T.sub }}>No goals — it finished 0–0.</div>
+      </CenterSection>
+    )
+  }
+
+  /* Grouped by API-Football's own team id, which the goals carry — exact, and it
+   * handles the cases where the two providers' names share nothing ("Atletico-MG"
+   * against "CA Mineiro"). Name matching is only the fallback. */
+  const { homeTeamId, awayTeamId } = state
+  const side = (id, teamName) => goals.filter(g =>
+    id != null && g.teamId != null ? g.teamId === id : nameScore(g.team, teamName) > 0)
+  const homeGoals = side(homeTeamId, fixture.homeTeam)
+  const awayGoals = side(awayTeamId, fixture.awayTeam)
+  const grouped = [
+    { name: fixture.homeTeam, logo: fixture.homeLogo, list: homeGoals },
+    { name: fixture.awayTeam, logo: fixture.awayLogo, list: awayGoals },
+  ]
+  // Anything the name match couldn't place still gets shown, never dropped.
+  const placed = new Set([...homeGoals, ...awayGoals])
+  const unplaced = goals.filter(g => !placed.has(g))
+
+  const line = (g) => `${formatMinute(g)} ${g.player}${
+    g.detail && g.detail !== 'Normal Goal' ? ` (${g.detail.toLowerCase()})` : ''}`
+
+  return (
+    <CenterSection title="Goals">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {grouped.filter(t => t.list.length > 0).map(t => (
+          <div key={t.name}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
+              <Crest src={t.logo} name={t.name} size={20} />
+              <span style={{ ...type.small, fontWeight: 600, color: T.ink }}>{t.name}</span>
+            </div>
+            <div style={{ ...type.small, color: T.sub, lineHeight: 1.7 }}>
+              {t.list.map((g, i) => (
+                <div key={i}>
+                  <span style={{ ...type.num, color: T.ink, fontWeight: 600 }}>{formatMinute(g)}</span>
+                  {' '}{g.player}
+                  {g.detail && g.detail !== 'Normal Goal' && (
+                    <span style={{ color: T.faint }}> ({g.detail.toLowerCase()})</span>
+                  )}
+                  {g.assist && <span style={{ color: T.faint }}> · assist {g.assist}</span>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {unplaced.length > 0 && (
+          <div style={{ ...type.small, color: T.sub, lineHeight: 1.7 }}>
+            {unplaced.map((g, i) => <div key={i}>{line(g)} — {g.team}</div>)}
+          </div>
+        )}
+      </div>
+    </CenterSection>
+  )
+}
+
 function MatchCenter({
   fixture: f, analysis, standings, oddsHistory,
   onBack, onOpenAnalysis, tracked, onToggleTrack,
@@ -2332,10 +2438,12 @@ function MatchCenter({
               marginTop: 18, padding: '16px 18px', background: T.card2, borderRadius: 14,
             }}>
               <div style={{ ...type.small, fontSize: 13, fontWeight: 560, color: T.ink }}>
-                Shot maps, heatmaps and event timelines
+                Shot maps, heatmaps and live event timelines
               </div>
               <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 6 }}>
-                Advanced live match visuals aren't available on the current data plan.
+                The live clock and in-progress events aren't available on our current plans, so
+                nothing here updates minute by minute. Once the match finishes, goal scorers and
+                their minutes will appear below if we can retrieve them.
               </div>
             </div>
           </CenterSection>
@@ -2356,6 +2464,9 @@ function MatchCenter({
             </Card>
           </Reveal>
         )}
+
+        {/* ---------- GOALS — finished matches only, fetched on open ---------- */}
+        <GoalsSection fixture={f} />
 
         <CenterSection title="Recent form — last five">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>

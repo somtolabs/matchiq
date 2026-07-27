@@ -109,7 +109,7 @@ function distinctive(s) {
 /* How strongly two team names refer to the same club. 0 means they don't.
  * Graded rather than boolean so the best candidate event wins instead of
  * whichever one happened to come back first. */
-function nameScore(a, b) {
+export function nameScore(a, b) {
   const na = norm(a)
   const nb = norm(b)
   if (!na || !nb) return 0
