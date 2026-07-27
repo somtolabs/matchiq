@@ -127,6 +127,35 @@ export function localDayUtcRange(days = 0) {
   return { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) }
 }
 
+/* One head-to-head meeting, reduced to what can honestly be shown.
+ *
+ * regularTime is preferred over fullTime for the same reason settlementScore
+ * prefers it: football-data folds a shootout into `fullTime`, so a cup tie that
+ * finished 1-1 and went to penalties arrives as 6-4. Rendering that as the
+ * scoreline would put a goal fest on screen that never happened — and these
+ * head-to-head feeds are full of cup ties.
+ *
+ * `shootout` is carried through so a tie decided on penalties can be labelled
+ * as one rather than looking like an ordinary draw. */
+export function h2hRows(fixture, limit = 6) {
+  const rows = []
+  for (const m of fixture?.h2h?.matches || []) {
+    if (rows.length >= limit) break
+    const reg = m.score?.regularTime
+    rows.push({
+      key: m.id ?? `${m.utcDate}-${rows.length}`,
+      homeName: m.homeTeam?.shortName || m.homeTeam?.name || 'Home',
+      awayName: m.awayTeam?.shortName || m.awayTeam?.name || 'Away',
+      home: reg?.home ?? m.score?.fullTime?.home ?? m.homeScore ?? null,
+      away: reg?.away ?? m.score?.fullTime?.away ?? m.awayScore ?? null,
+      shootout: m.score?.penalties?.home != null,
+      date: m.utcDate ? new Date(m.utcDate) : null,
+      competition: m.competition?.name || null,
+    })
+  }
+  return rows
+}
+
 /* ---------- which of the three phases a fixture is in ----------
  *
  * The single place the app decides whether a match is still ahead, underway, or

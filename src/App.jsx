@@ -11,7 +11,7 @@ import {
   LS_COMP_CACHE, COMP_TTL_MS, cacheFresh,
   delay, readJSON, writeJSON, readRaw, writeRaw,
 } from './lib/storage.js'
-import { footballFetch, isHalfTime, liveLabel, matchScore, matchPhase } from './lib/football.js'
+import { footballFetch, isHalfTime, liveLabel, matchScore, matchPhase, h2hRows } from './lib/football.js'
 import { getFixtureNews, getHeadlines, relativeTime } from './lib/news.js'
 import { getMatchGoals, formatMinute } from './lib/matchevents.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
@@ -2041,6 +2041,8 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
         </details>
       </Reveal>
 
+      <HeadToHead fixture={fx} />
+
       <RecentHeadlines fixture={fx} news={data.news} />
 
       <div style={{
@@ -2053,6 +2055,75 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
         {onReRun && <Button kind="ghost" onClick={onReRun} disabled={busy} style={{ padding: '8px 18px', fontSize: 13 }}>Read it again</Button>}
       </div>
     </div>
+  )
+}
+
+/* The real meetings between these two sides, on the verdict screen.
+ *
+ * The model reasons from this record — it is in the prompt, and the reasoning
+ * cites it — but the reader could not see it. MatchPreview shows head-to-head
+ * only until an analysis exists, at which point VerdictStory replaces it, and
+ * the Match Centre copy sits behind a separate tap. So a verdict could say
+ * "two draws in the last five meetings" with the meetings themselves nowhere
+ * on screen. This is the same fetched data, rendered where the claim is made.
+ *
+ * Three honestly distinct states, because "never met" and "we couldn't load it"
+ * are not the same fact and must not share a message. */
+function HeadToHead({ fixture: fx }) {
+  const rows = h2hRows(fx, 6)
+  const summary = fx.h2h?.summary
+  const neverMet = summary === 'No prior meetings on record'
+
+  return (
+    <Reveal>
+      <Card style={{ padding: 28, marginBottom: 18 }}>
+        <Eyebrow>Head to head</Eyebrow>
+        {rows.length === 0 ? (
+          <div style={{ ...type.small, marginTop: 12 }}>
+            {neverMet
+              ? 'These two have no prior meetings on record.'
+              : 'We couldn’t load the head-to-head record for this match.'}
+          </div>
+        ) : (
+          <>
+            {summary && summary !== 'Head-to-head data unavailable' && (
+              <div style={{ ...type.body, fontSize: 15.5, color: T.ink, marginTop: 12 }}>{summary}</div>
+            )}
+            <div style={{ marginTop: 16 }}>
+              {rows.map((m, i) => (
+                <div key={m.key} style={{
+                  display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto 74px',
+                  gap: 10, alignItems: 'baseline', padding: '9px 0',
+                  borderBottom: i < rows.length - 1 ? `1px solid ${T.line}` : 'none',
+                }}>
+                  <span style={{
+                    ...type.small, fontSize: 12.5, color: T.ink, minWidth: 0,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {m.homeName} v {m.awayName}
+                    {m.competition && (
+                      <span style={{ color: T.faint }}> · {m.competition}</span>
+                    )}
+                  </span>
+                  <span style={{ ...type.num, fontSize: 13, color: T.ink, whiteSpace: 'nowrap' }}>
+                    {m.home != null && m.away != null ? `${m.home}–${m.away}` : '—'}
+                    {m.shootout && (
+                      <span style={{ ...type.small, fontSize: 10.5, color: T.faint }}> (pens)</span>
+                    )}
+                  </span>
+                  <span style={{ ...type.small, fontSize: 11.5, color: T.faint, textAlign: 'right' }}>
+                    {m.date ? m.date.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div style={{ ...type.small, color: T.faint, marginTop: 14, fontSize: 12 }}>
+              Ninety-minute scores. A tie settled on penalties is marked, not folded into the scoreline.
+            </div>
+          </>
+        )}
+      </Card>
+    </Reveal>
   )
 }
 
@@ -2592,28 +2663,28 @@ function MatchCenter({
           ) : (
             <div>
               <div style={{ ...type.body, fontSize: 15.5, color: T.ink }}>{f.h2h.summary}</div>
+              {/* Same reader as the verdict screen's Head to head section, so
+                  the two can't disagree — and so a shootout is no longer shown
+                  as its summed scoreline here either. */}
               <div style={{ marginTop: 16 }}>
-                {h2hMatches.slice(0, 6).map((m, i) => {
-                  const hs = m.score?.fullTime?.home
-                  const as = m.score?.fullTime?.away
-                  return (
-                    <div key={m.id || i} style={{
-                      display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto 68px',
-                      gap: 10, alignItems: 'baseline', padding: '8px 0',
-                      borderBottom: i < Math.min(h2hMatches.length, 6) - 1 ? `1px solid ${T.line}` : 'none',
-                    }}>
-                      <span style={{ ...type.small, fontSize: 12.5, color: T.ink, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {m.homeTeam?.shortName || m.homeTeam?.name} v {m.awayTeam?.shortName || m.awayTeam?.name}
-                      </span>
-                      <span style={{ ...type.num, fontSize: 13, color: T.ink }}>
-                        {hs != null && as != null ? `${hs}–${as}` : '—'}
-                      </span>
-                      <span style={{ ...type.small, fontSize: 11.5, color: T.faint, textAlign: 'right' }}>
-                        {m.utcDate ? new Date(m.utcDate).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : ''}
-                      </span>
-                    </div>
-                  )
-                })}
+                {h2hRows(f, 6).map((m, i, arr) => (
+                  <div key={m.key} style={{
+                    display: 'grid', gridTemplateColumns: 'minmax(0,1fr) auto 68px',
+                    gap: 10, alignItems: 'baseline', padding: '8px 0',
+                    borderBottom: i < arr.length - 1 ? `1px solid ${T.line}` : 'none',
+                  }}>
+                    <span style={{ ...type.small, fontSize: 12.5, color: T.ink, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {m.homeName} v {m.awayName}
+                    </span>
+                    <span style={{ ...type.num, fontSize: 13, color: T.ink, whiteSpace: 'nowrap' }}>
+                      {m.home != null && m.away != null ? `${m.home}–${m.away}` : '—'}
+                      {m.shootout && <span style={{ ...type.small, fontSize: 10.5, color: T.faint }}> (pens)</span>}
+                    </span>
+                    <span style={{ ...type.small, fontSize: 11.5, color: T.faint, textAlign: 'right' }}>
+                      {m.date ? m.date.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : ''}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
