@@ -5,7 +5,7 @@ import {
 } from '../lib/storage.js'
 import {
   mapMatch, formDetailForTeam, footballFetch, onFootballRateLimit, footballBlockedMs,
-  FOOTBALL_RATE_LIMIT,
+  FOOTBALL_RATE_LIMIT, todayKey, localDayUtcRange,
 } from '../lib/football.js'
 
 /* A throttled fixture-list call used to return [] and render as "nothing on
@@ -77,14 +77,19 @@ export function useFixtures({ setStatus, setHealth }) {
     return { raw, matches }
   }
 
-  async function fetchDay(dateStr) {
-    return fetchRange(dateStr, dateStr)
+  /* "Today" means the viewer's calendar day, not UTC's. `toISOString()` on the
+   * current instant gave the UTC date, which is a different day for anyone far
+   * enough east or west — a viewer in Sydney at 07:41 on the 28th was served the
+   * card for the 27th. localDayUtcRange converts the local day back into the UTC
+   * dates it overlaps, which is what football-data's filter actually keys on. */
+  async function fetchToday() {
+    const { from, to } = localDayUtcRange(0)
+    return fetchRange(from, to)
   }
 
   async function loadFixturesWindow() {
-    const from = new Date()
-    const to = new Date(Date.now() + 10 * 86400000)
-    return fetchRange(from.toISOString().split('T')[0], to.toISOString().split('T')[0])
+    const { from, to } = localDayUtcRange(10)
+    return fetchRange(from, to)
   }
 
   /* Refreshing repeatedly was the reported failure: each refresh re-fired the
@@ -94,7 +99,9 @@ export function useFixtures({ setStatus, setHealth }) {
   async function loadFixtures(useWeekWindow = false, { force = false } = {}) {
     setFixturesLoading(true); setFixturesError(null)
 
-    const today = new Date().toISOString().split('T')[0]
+    // Keyed on the viewer's day too, so the cache rolls over when their date
+    // changes rather than when UTC's does.
+    const today = todayKey()
     const cacheKey = useWeekWindow ? `window:${today}` : `day:${today}`
 
     if (!force) {
@@ -116,7 +123,7 @@ export function useFixtures({ setStatus, setHealth }) {
     }
 
     try {
-      let { raw, matches } = await fetchDay(today)
+      let { raw, matches } = await fetchToday()
       if (matches.length === 0 && !useWeekWindow) {
         ({ raw, matches } = await loadFixturesWindow())
       }

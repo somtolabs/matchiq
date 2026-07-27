@@ -87,6 +87,64 @@ export function resetFootballGate() {
   gate = Promise.resolve()
 }
 
+/* ---------- calendar days, in the viewer's timezone ----------
+ *
+ * football-data timestamps are UTC instants; `new Date(utcDate)` parses them to
+ * the right instant regardless of where the browser is, and every instant
+ * comparison in the app is epoch arithmetic, which is correct by construction.
+ * What was NOT correct was the calendar-day question — "is this today?" — which
+ * has no answer without a timezone, and was being answered in three different
+ * ones at once.
+ *
+ * 'en-CA' formats as YYYY-MM-DD, so a day key sorts and compares as a string
+ * while still being derived from a real Date in a real zone. Passing a tz makes
+ * it explicit; omitting it means the viewer's own zone. */
+export function dayKey(d, timeZone) {
+  const dt = d instanceof Date ? d : new Date(d)
+  if (Number.isNaN(dt.getTime())) return null
+  return dt.toLocaleDateString('en-CA', timeZone ? { timeZone } : undefined)
+}
+
+export function todayKey(timeZone) {
+  return dayKey(new Date(), timeZone)
+}
+
+/* Calendar arithmetic on the date itself, so it can't be knocked sideways by a
+ * DST transition the way adding 86,400,000ms to an instant can. */
+export function nextDayKey(key, days = 1) {
+  const [y, m, d] = String(key).split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10)
+}
+
+/* The UTC dates spanned by one local calendar day. football-data filters
+ * dateFrom/dateTo on UTC, so asking for the viewer's local day means asking for
+ * the UTC day(s) it overlaps — otherwise a viewer far enough east or west is
+ * served a card for a day that isn't theirs. */
+export function localDayUtcRange(days = 0) {
+  const key = todayKey()
+  const start = new Date(`${key}T00:00:00`)          // parsed as local midnight
+  const end = new Date(start.getTime() + (days + 1) * 86400000 - 1)
+  return { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) }
+}
+
+/* ---------- which of the three phases a fixture is in ----------
+ *
+ * The single place the app decides whether a match is still ahead, underway, or
+ * done. Upstream status is authoritative when it is decisive; the kick-off
+ * instant is the tie-breaker for the one case it isn't — a fixture still marked
+ * SCHEDULED whose kick-off has passed because the status refresh hasn't caught
+ * up yet. That fixture is not something we can honestly write a forward
+ * prediction for, so it counts as under way. */
+export function matchPhase(f) {
+  if (!f) return 'upcoming'
+  if (f.status === 'IN_PLAY' || f.status === 'LIVE') return 'live'
+  if (f.status === 'FINISHED') return 'finished'
+  if (f.status === 'POSTPONED' || f.status === 'CANCELLED') return 'off'
+  const t = f.kickoffDate ? new Date(f.kickoffDate).getTime() : NaN
+  if (!Number.isNaN(t) && t <= Date.now()) return 'live'
+  return 'upcoming'
+}
+
 /* Maps a raw /v4/matches item to the internal fixture shape the UI consumes.
  * Returns null for malformed items so callers can .filter(Boolean). */
 export function mapMatch(item) {
@@ -100,10 +158,9 @@ export function mapMatch(item) {
   }
 
   const kickoffDate = new Date(item.utcDate)
-  const today = new Date()
-  const isToday = kickoffDate.toDateString() === today.toDateString()
-  const tomorrow = new Date(Date.now() + 86400000)
-  const isTomorrow = kickoffDate.toDateString() === tomorrow.toDateString()
+  const today = todayKey()
+  const isToday = dayKey(kickoffDate) === today
+  const isTomorrow = dayKey(kickoffDate) === nextDayKey(today)
 
   const compCode = item.competition?.code || ''
   const compName = item.competition?.name || 'Unknown'
@@ -120,12 +177,17 @@ export function mapMatch(item) {
     awayTeam: item.awayTeam.name || item.awayTeam.shortName || 'TBC',
     homeLogo: item.homeTeam.crest,
     awayLogo: item.awayTeam.crest,
+    /* Rendered in the viewer's own timezone. These two lines used to pin
+     * `timeZone: 'Europe/London'` while isToday/isTomorrow and matchDate below
+     * were computed in the browser's zone, so the same fixture could carry a
+     * London clock time next to a local calendar date — a Sydney user saw
+     * "Thu 30 Jul · 23:30" for a match that kicks off 08:30 their Thursday. */
     kickoff: kickoffDate.toLocaleTimeString('en-GB', {
-      hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London',
+      hour: '2-digit', minute: '2-digit',
     }),
     kickoffDate,
     dayLabel: isToday ? null : isTomorrow ? 'Tomorrow'
-      : kickoffDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'Europe/London' }),
+      : kickoffDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }),
     matchDate: isToday ? null
       : kickoffDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }),
     homeForm: [],

@@ -11,7 +11,7 @@ import {
   LS_COMP_CACHE, COMP_TTL_MS, cacheFresh,
   delay, readJSON, writeJSON, readRaw, writeRaw,
 } from './lib/storage.js'
-import { footballFetch, isHalfTime, liveLabel, matchScore } from './lib/football.js'
+import { footballFetch, isHalfTime, liveLabel, matchScore, matchPhase } from './lib/football.js'
 import { getFixtureNews, getHeadlines, relativeTime } from './lib/news.js'
 import { getMatchGoals, formatMinute } from './lib/matchevents.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
@@ -1154,6 +1154,8 @@ function MatchesScreen({
     let best = null
     for (const [id, a] of Object.entries(analysisCache)) {
       if (!a?.recommendation?.pick) continue
+      // A look-back at a played match is not a live pick and must not headline.
+      if (a.retrospective) continue
       const fx = fixtures.find(f => String(f.id) === String(id))
       if (!fx) continue
       if (!best) { best = { fx, a }; continue }
@@ -1535,8 +1537,39 @@ function MarketBar({ fixture: f }) {
   )
 }
 
-function MatchPreview({ fixture: f, onAnalyze, busy }) {
+/* A match that is under way right now. Neither framing is honest for it: a
+ * forward prediction is being written after the ball is already rolling, and a
+ * retrospective read has no final result to be retrospective about. So the
+ * trigger is withheld and the reason is said plainly. */
+function LiveLock({ fixture: f }) {
+  return (
+    <Reveal>
+      <Card style={{ padding: 30, marginTop: 36, borderLeft: `3px solid ${T.live}` }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
+          <PulseDot size={8} />
+          <span style={{ ...type.small, fontWeight: 620, color: T.live, fontSize: 12.5 }}>
+            {isHalfTime(f) ? 'Half-time' : 'Live right now'}
+          </span>
+        </div>
+        <div style={{ ...type.title, fontSize: 19, color: T.ink }}>
+          This match is being played right now.
+        </div>
+        <div style={{ ...type.body, marginTop: 10 }}>
+          We won't read it while it's in progress. A prediction written after kick-off
+          isn't a prediction, and a verdict written before full time isn't a verdict —
+          either one would go into your record as something it isn't.
+        </div>
+        <div style={{ ...type.small, color: T.faint, marginTop: 14 }}>
+          Follow it with the heart above and it'll be here to read the moment it finishes.
+        </div>
+      </Card>
+    </Reveal>
+  )
+}
+
+function MatchPreview({ fixture: f, onAnalyze, busy, phase }) {
   const hasH2h = f.h2h?.matches?.length > 0
+  const after = phase === 'finished'
   return (
     <div style={{ marginTop: 36, display: 'flex', flexDirection: 'column', gap: 18 }}>
       <Reveal>
@@ -1575,10 +1608,12 @@ function MatchPreview({ fixture: f, onAnalyze, busy }) {
       <Reveal delay={0.14}>
         <div style={{ textAlign: 'center', padding: '18px 0 4px' }}>
           <Button onClick={onAnalyze} disabled={busy} style={{ padding: '15px 34px', fontSize: 16, borderRadius: 999 }}>
-            Read this match for me
+            {after ? 'What would we have said?' : 'Read this match for me'}
           </Button>
           <div style={{ ...type.small, color: T.faint, marginTop: 14, maxWidth: 400, marginLeft: 'auto', marginRight: 'auto' }}>
-            Three independent AI perspectives — form, history, and the market — settled into one honest verdict.
+            {after
+              ? 'This match is already played. We’ll read it from the data as it stood beforehand — but it goes down as a look back, not a call, and it will never count towards your record.'
+              : 'Three independent AI perspectives — form, history, and the market — settled into one honest verdict.'}
           </div>
         </div>
       </Reveal>
@@ -1698,10 +1733,18 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
       {/* THE VERDICT — one clear thing the eye lands on first */}
       <Reveal>
         <div className="iq-halo" style={{ textAlign: 'center', padding: '16px 0 8px' }}>
-          <Eyebrow style={{ color: T.accent, marginBottom: 16 }}>Our verdict</Eyebrow>
+          <Eyebrow style={{ color: T.accent, marginBottom: 16 }}>
+            {data.retrospective ? 'Looking back' : 'Our verdict'}
+          </Eyebrow>
           <h1 style={{ ...type.display, fontSize: 40, color: T.ink, margin: 0 }}>
-            {pickHeadline(r.pick, fx)}.
+            {data.retrospective ? `We'd have said ${pickShort(r.pick, fx)}` : pickHeadline(r.pick, fx)}.
           </h1>
+          {data.retrospective && (
+            <div style={{ ...type.small, color: T.faint, marginTop: 12, maxWidth: 380, margin: '12px auto 0' }}>
+              Read after the match was already played, from the data as it stood beforehand.
+              It doesn't count towards your record.
+            </div>
+          )}
           <div style={{ ...type.body, fontSize: 19, color: T.sub, marginTop: 12 }}>
             We're <strong style={{ color: T.ink, fontWeight: 560 }}>{conf}% sure</strong>, {confidencePhrase(r.confidence)}.
           </div>
@@ -2080,6 +2123,11 @@ function TrackBar({ tracked, onTrack }) {
 }
 
 function MatchDetail({ fixture, data, loading, error, onBack, onRetry, onAnalyze, tracked, onToggleTrack, onOpenCenter }) {
+  /* Three phases, three behaviours — previously two, with no status check at
+   * all: a finished match and a live one both got the same forward-looking
+   * "Read this match for me". A verdict already written stays visible whatever
+   * the phase; it is only the trigger that is withheld while a match is live. */
+  const phase = matchPhase(fixture)
   return (
     <div style={{ maxWidth: 640, margin: '0 auto' }}>
       <DetailHeader fixture={fixture} onBack={onBack} tracked={tracked} onToggleTrack={onToggleTrack} />
@@ -2095,9 +2143,12 @@ function MatchDetail({ fixture, data, loading, error, onBack, onRetry, onAnalyze
           <Button kind="soft" onClick={onRetry}>Try again</Button>
         </Card>
       ) : data ? (
-        <VerdictStory fixture={fixture} data={data} onReRun={onAnalyze} busy={loading} />
+        <VerdictStory fixture={fixture} data={data}
+          onReRun={phase === 'live' ? null : onAnalyze} busy={loading} />
+      ) : phase === 'live' ? (
+        <LiveLock fixture={fixture} />
       ) : (
-        <MatchPreview fixture={fixture} onAnalyze={onAnalyze} busy={loading} />
+        <MatchPreview fixture={fixture} onAnalyze={onAnalyze} busy={loading} phase={phase} />
       )}
     </div>
   )
@@ -3019,7 +3070,8 @@ function RecordScreen({
       .sort((x, y) => (y.a._ts || 0) - (x.a._ts || 0)),
     [fixtures, analysisCache])
 
-  const resolved = entries.filter(e => e.a.resolved)
+  // Look-backs are shown in the list but never counted — see runAnalysis.
+  const resolved = entries.filter(e => e.a.resolved && !e.a.retrospective)
   const correct = resolved.filter(e => e.a.correct).length
   const winRate = resolved.length >= 3 ? Math.round((correct / resolved.length) * 100) : null
 
@@ -4088,7 +4140,8 @@ function ProfileScreen({
   const entries = Object.values(analysisCache)
   const total = entries.length
   const uniqueMatches = new Set(Object.keys(analysisCache)).size
-  const resolved = entries.filter(a => a.resolved)
+  // Look-backs are excluded from every accuracy figure — see runAnalysis.
+  const resolved = entries.filter(a => a.resolved && !a.retrospective)
   const correct = resolved.filter(a => a.correct).length
   const accuracy = resolved.length ? Math.round((correct / resolved.length) * 100) : 0
   const confs = entries.map(a => a.recommendation?.confidence).filter(c => typeof c === 'number')
@@ -4747,9 +4800,16 @@ function MatchIQ({ user, username, onUsernameChange }) {
       if (!fx) continue
       const resolved = autoResolve(a, fx)
       if (resolved) {
-        next[id] = resolved; changed = true; perf = updateAgentPerformance(perf, resolved)
-        // Mirror the resolution into the permanent ledger (best-effort).
-        autoResolveInLedger(user, fx, resolved.actualResult)
+        next[id] = resolved; changed = true
+        /* A retrospective resolves for display — the reader still gets to see
+         * whether the look-back would have landed — but it never touches agent
+         * performance or the ledger, because it was written after the result
+         * was already known and grading it would flatter the record. */
+        if (!a.retrospective) {
+          perf = updateAgentPerformance(perf, resolved)
+          // Mirror the resolution into the permanent ledger (best-effort).
+          autoResolveInLedger(user, fx, resolved.actualResult)
+        }
       }
     }
     if (changed) { setAnalysisCache(next); setAgentPerf(perf) }
@@ -5137,6 +5197,14 @@ function MatchIQ({ user, username, onUsernameChange }) {
   const marketInFlightRef = useRef(new Set())
 
   async function runAnalysis(fx) {
+    /* The live case is refused outright rather than being quietly treated as
+     * one of the other two. The UI already withholds the button, so this is the
+     * backstop for a match that kicks off between render and click. */
+    const phase = matchPhase(fx)
+    if (phase === 'live') {
+      setError('This match is being played right now — we won\'t read it until full time.')
+      return
+    }
     if (analysisInFlightRef.current != null) {
       console.warn(`[groq] analysis already in flight for fixture ${analysisInFlightRef.current} — ignoring duplicate trigger`)
       return
@@ -5194,10 +5262,17 @@ function MatchIQ({ user, username, onUsernameChange }) {
       parsed.kelly = calculateKelly(parsed, fx)
       parsed.fixtureId = fx.id
       parsed.competitionCode = fx.competitionCode
+      /* A read of an already-finished match is a look back, not a prediction.
+       * Marked here once, at the point the phase is known, so every consumer —
+       * the verdict framing, the record, the profile stats and the ledger — can
+       * tell the two apart from the stored analysis alone. */
+      parsed.retrospective = phase === 'finished'
       setAnalysis(parsed)
       setAnalysisCache(prev => ({ ...prev, [fx.id]: parsed }))
       // Parallel, permanent record. Best-effort: never blocks the analysis UI.
-      writePredictionToLedger(user, fx, parsed)
+      // Retrospectives are deliberately not written: the ledger is the verified
+      // record of real forward calls, and a post-hoc read is not one.
+      if (!parsed.retrospective) writePredictionToLedger(user, fx, parsed)
       setStatus('analysis', 'operational')
       setHealth('analysis', { code: 200, msg: `OK · ${fx.homeTeam} vs ${fx.awayTeam}`, at: Date.now() })
 
