@@ -153,6 +153,34 @@ export function autoResolve(analysis, fixture) {
   }
 }
 
+/* May this cached analysis be counted in an accuracy figure?
+ *
+ * One predicate, used by every on-device accuracy number, so the two screens
+ * cannot drift apart. It mirrors what the ledger's is_retrospective column
+ * marks server-side, but derives the same fact locally, because the cache is
+ * where these screens actually read from.
+ *
+ * Three ways an entry fails:
+ *   - it isn't resolved yet, so there is nothing to be right or wrong about;
+ *   - it is stamped `retrospective` (written since e3d7aec, when the phase was
+ *     known at the moment of analysis);
+ *   - its timestamp is at or after its fixture's kick-off — the same detection
+ *     the ledger backfill used (analyzed_at > kickoff_at), applied to entries
+ *     written before that stamp existed.
+ *
+ * And one way it is refused rather than judged: if either timestamp is missing
+ * — no `_ts`, or the fixture is no longer in the list and its kick-off cannot
+ * be looked up — the entry is excluded. An unverifiable entry is not evidence,
+ * and counting it would be the same mistake in a quieter form. */
+export function countsTowardRecord(a, fx) {
+  if (!a || !a.resolved) return false
+  if (a.retrospective === true) return false
+  const ts = a._ts
+  const kickoff = fx?.kickoffDate ? new Date(fx.kickoffDate).getTime() : NaN
+  if (!ts || Number.isNaN(kickoff)) return false
+  return ts <= kickoff
+}
+
 export const AGENT_PERF_EMPTY = {
   form:     { correct: 0, total: 0 },
   tactical: { correct: 0, total: 0 },

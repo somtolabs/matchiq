@@ -17,7 +17,7 @@ import { getMatchGoals, formatMinute } from './lib/matchevents.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
 import { GROQ_MODEL, GROQ_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject } from './lib/groq.js'
 import {
-  calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve,
+  calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve, countsTowardRecord,
   edgeToOutcome, AGENT_PERF_EMPTY,
 } from './lib/analysis.js'
 import {
@@ -3070,8 +3070,11 @@ function RecordScreen({
       .sort((x, y) => (y.a._ts || 0) - (x.a._ts || 0)),
     [fixtures, analysisCache])
 
-  // Look-backs are shown in the list but never counted — see runAnalysis.
-  const resolved = entries.filter(e => e.a.resolved && !e.a.retrospective)
+  /* Look-backs are still shown in the list below — the reader keeps seeing what
+   * was read — but they are never counted. `countsTowardRecord` checks each
+   * entry against its own fixture's kick-off, which catches the entries written
+   * before the retrospective stamp existed as well as the stamped ones. */
+  const resolved = entries.filter(e => countsTowardRecord(e.a, e.fx))
   const correct = resolved.filter(e => e.a.correct).length
   const winRate = resolved.length >= 3 ? Math.round((correct / resolved.length) * 100) : null
 
@@ -4122,7 +4125,7 @@ function Segmented({ value, options, onChange }) {
 }
 
 function ProfileScreen({
-  user, analysisCache, themeMode, onThemeMode,
+  user, analysisCache, fixtures, themeMode, onThemeMode,
   emailNotifications, onEmailNotifications, onSignOut, isMobile,
   avatarChoice, onAvatarChoice, username, onUsernameChange,
 }) {
@@ -4140,8 +4143,19 @@ function ProfileScreen({
   const entries = Object.values(analysisCache)
   const total = entries.length
   const uniqueMatches = new Set(Object.keys(analysisCache)).size
-  // Look-backs are excluded from every accuracy figure — see runAnalysis.
-  const resolved = entries.filter(a => a.resolved && !a.retrospective)
+  /* The stored analysis carries `_ts` and `fixtureId` but no kick-off time, so
+   * the fixture list is passed in purely to supply the other half of the
+   * comparison. Keyed by string id — analysisCache keys are strings, fixture
+   * ids are numbers. Anything not found here has no verifiable kick-off and is
+   * excluded by countsTowardRecord rather than counted on trust. */
+  const fixtureById = useMemo(() => {
+    const m = new Map()
+    for (const f of fixtures || []) m.set(String(f.id), f)
+    return m
+  }, [fixtures])
+  const resolved = Object.entries(analysisCache)
+    .filter(([id, a]) => countsTowardRecord(a, fixtureById.get(String(id))))
+    .map(([, a]) => a)
   const correct = resolved.filter(a => a.correct).length
   const accuracy = resolved.length ? Math.round((correct / resolved.length) * 100) : 0
   const confs = entries.map(a => a.recommendation?.confidence).filter(c => typeof c === 'number')
@@ -5385,7 +5399,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
         agentAccuracy={agentAccuracy} calibration={calibration} />
     )
     if (activeTab === 'profile') return (
-      <ProfileScreen user={user} analysisCache={analysisCache} isMobile={isMobile}
+      <ProfileScreen user={user} analysisCache={analysisCache} fixtures={fixtures} isMobile={isMobile}
         themeMode={themeMode} onThemeMode={setThemeMode}
         emailNotifications={emailNotifications} onEmailNotifications={setEmailNotifications}
         avatarChoice={avatarChoice} onAvatarChoice={setAvatarChoice}
