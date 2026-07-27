@@ -140,12 +140,88 @@ export function mapMatch(item) {
     statusShort: item.status,
     goalsHome,
     goalsAway,
+    /* The real stage fields football-data returns alongside the score. Verified
+     * present on live responses: duration is REGULAR | EXTRA_TIME |
+     * PENALTY_SHOOTOUT, with regularTime/extraTime/penalties filled in as the
+     * match actually progressed. Kept so a shootout can be shown as what it was
+     * rather than as football-data's summed `fullTime`. */
+    duration: item.score?.duration || null,
+    regularTime: item.score?.regularTime || null,
+    extraTime: item.score?.extraTime || null,
+    penalties: item.score?.penalties || null,
+    halfTimeScore: item.score?.halfTime || null,
     matchday: item.matchday ?? null,
     competition: compName,
     competitionId: compCode,
     competitionCode: compCode,
     region,
   }
+}
+
+/* football-data reports PAUSED for half-time and maps to IN_PLAY internally, so
+ * the raw code is the only place the distinction survives. */
+export function isHalfTime(f) {
+  return f?.statusShort === 'PAUSED'
+}
+
+/* The label for a match that is currently in play. */
+export function liveLabel(f) {
+  return isHalfTime(f) ? 'Half-time' : 'Live now'
+}
+
+/* The score as it should actually be read, plus a note when the match went past
+ * ninety minutes.
+ *
+ * This matters because football-data's `fullTime` is not the scoreline for a
+ * shootout — it is regularTime + extraTime + penalties summed together. Real
+ * examples from the live API:
+ *
+ *   PSG v Arsenal        regularTime 1–1, extraTime 0–0, penalties 4–3, fullTime 5–4
+ *   Portugal v Slovenia  regularTime 0–0, extraTime 0–0, penalties 3–0, fullTime 3–0
+ *   Germany v Paraguay   regularTime 1–1, extraTime 0–0, penalties 3–4, fullTime 4–5
+ *
+ * Rendering `fullTime` there prints "5–4" for a match that finished 1–1 — a
+ * scoreline that never happened. For EXTRA_TIME, by contrast, fullTime is
+ * correct (regularTime + extraTime), so it is used as-is:
+ *
+ *   Juventus v Galatasaray  regularTime 3–0, extraTime 0–2, fullTime 3–2
+ *
+ * Returns the numbers to show plus an optional note. Never invents: if the stage
+ * fields are absent it falls straight back to the plain score. */
+export function matchScore(f) {
+  const plain = { home: f?.goalsHome ?? null, away: f?.goalsAway ?? null, note: null }
+  if (!f || f.status !== 'FINISHED' || !f.duration || f.duration === 'REGULAR') return plain
+
+  const reg = f.regularTime
+  const ext = f.extraTime
+  const pen = f.penalties
+
+  if (f.duration === 'PENALTY_SHOOTOUT') {
+    if (!reg || reg.home == null || !pen || pen.home == null) return plain
+    // A present extraTime object means extra time was actually played.
+    const playedET = !!ext && ext.home != null
+    const home = reg.home + (playedET ? ext.home : 0)
+    const away = reg.away + (playedET ? ext.away : 0)
+    // Name the winner: "won 4–3 on penalties" alone doesn't say by whom.
+    const winner = pen.home > pen.away ? f.homeTeam : f.awayTeam
+    const hi = Math.max(pen.home, pen.away)
+    const lo = Math.min(pen.home, pen.away)
+    return {
+      home, away,
+      note: `${playedET ? 'After extra time' : 'At full-time'} · ${winner} won ${hi}–${lo} on penalties`,
+    }
+  }
+
+  if (f.duration === 'EXTRA_TIME') {
+    if (!reg || reg.home == null) return { ...plain, note: 'After extra time' }
+    // fullTime already includes extra time here, so only the note is added.
+    return {
+      home: plain.home, away: plain.away,
+      note: `After extra time · ${reg.home}–${reg.away} at ninety minutes`,
+    }
+  }
+
+  return plain
 }
 
 /* One finished match from a team's point of view: result, goals for/against,

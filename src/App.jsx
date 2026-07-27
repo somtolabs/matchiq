@@ -11,7 +11,7 @@ import {
   LS_COMP_CACHE, COMP_TTL_MS, cacheFresh,
   delay, readJSON, writeJSON, readRaw, writeRaw,
 } from './lib/storage.js'
-import { footballFetch } from './lib/football.js'
+import { footballFetch, isHalfTime, liveLabel, matchScore } from './lib/football.js'
 import { getFixtureNews, getHeadlines, relativeTime } from './lib/news.js'
 import { getMatchGoals, formatMinute } from './lib/matchevents.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
@@ -957,8 +957,11 @@ function MatchRow({ fixture: f, analyzed, tracked, onOpen, onToggleTrack }) {
       }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         {isLive ? (
-          <span style={{ display: 'inline-flex', alignItems: 'center', paddingLeft: 2 }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, paddingLeft: 2 }}>
             <PulseDot size={8} />
+            {/* PAUSED is football-data's half-time; without this it reads as
+                an ordinary live match. */}
+            {isHalfTime(f) && <span style={{ ...type.small, fontWeight: 600, color: T.live, fontSize: 11 }}>HT</span>}
           </span>
         ) : isFT ? (
           <span style={{ ...type.small, fontWeight: 600, color: T.ink, fontSize: 12 }}>Full time</span>
@@ -1456,7 +1459,7 @@ function DetailHeader({ fixture: f, onBack, tracked, onToggleTrack }) {
                 <div style={{ ...type.small, fontSize: 15, color: T.faint }}>v</div>
               )}
               <div style={{ ...type.small, color: T.faint, marginTop: 6, fontSize: 12.5 }}>
-                {isLive ? <span style={{ color: T.live, fontWeight: 620 }}>Live now</span>
+                {isLive ? <span style={{ color: T.live, fontWeight: 620 }}>{liveLabel(f)}</span>
                   : f.status === 'FINISHED' ? 'Full time'
                   : `${f.matchDate ? f.matchDate + ' · ' : ''}${f.kickoff}`}
               </div>
@@ -2356,11 +2359,12 @@ function MatchCenter({
   const isLive = f.status === 'IN_PLAY' || f.status === 'LIVE'
   const isFT = f.status === 'FINISHED'
   const hasScore = f.goalsHome != null && f.goalsAway != null
+  const score = matchScore(f)
   const home = standingsRowFor(standings, f.homeTeamId)
   const away = standingsRowFor(standings, f.awayTeamId)
   const h2hMatches = f.h2h?.matches || []
 
-  const statusLine = isLive ? 'Playing now'
+  const statusLine = isLive ? liveLabel(f)
     : isFT ? 'Full time'
     : f.status === 'POSTPONED' ? 'Postponed'
     : f.status === 'CANCELLED' ? 'Called off'
@@ -2396,7 +2400,10 @@ function MatchCenter({
               <div key="mid" style={{ textAlign: 'center' }}>
                 {hasScore ? (
                   <div style={{ ...type.num, fontSize: 34, fontWeight: 600, color: isLive ? T.live : T.ink }}>
-                    {f.goalsHome}–{f.goalsAway}
+                    {/* The real scoreline. football-data's `fullTime` sums in the
+                        shootout, so a 1–1 that went to penalties arrives as 5–4;
+                        matchScore unpicks that from the real stage fields. */}
+                    {score.home}–{score.away}
                   </div>
                 ) : (
                   <div style={{ ...type.small, fontSize: 15, color: T.faint }}>v</div>
@@ -2404,6 +2411,9 @@ function MatchCenter({
                 <div style={{ ...type.small, color: isLive ? T.live : T.faint, marginTop: 6, fontSize: 12.5, fontWeight: isLive || isFT ? 620 : 500 }}>
                   {isLive && <LiveDot size={6} />} {statusLine}
                 </div>
+                {score.note && (
+                  <div style={{ ...type.small, color: T.sub, marginTop: 6, fontSize: 12 }}>{score.note}</div>
+                )}
               </div>
             ) : (
               <div key={i} style={{ textAlign: 'center', minWidth: 0 }}>
@@ -2431,7 +2441,7 @@ function MatchCenter({
               </span>
             </div>
             <div style={{ marginTop: 16 }}>
-              <StatRow label="Status" value={f.statusShort === 'PAUSED' ? 'Half time' : 'In play'} strong />
+              <StatRow label="Status" value={isHalfTime(f) ? 'Half-time' : 'In play'} strong />
               {f.matchday != null && <StatRow label="Matchday" value={f.matchday} />}
             </div>
             {/* No minute counter: the current football-data.org plan does not
@@ -2440,16 +2450,22 @@ function MatchCenter({
               Our data plan returns the score and status for a live match, but not the clock —
               so we don't show a minute rather than guess one.
             </div>
+            {/* Three providers, three different things available. Stated
+                separately so none of it reads as a blanket "not available". */}
             <div style={{
               marginTop: 18, padding: '16px 18px', background: T.card2, borderRadius: 14,
             }}>
               <div style={{ ...type.small, fontSize: 13, fontWeight: 560, color: T.ink }}>
-                Shot maps, heatmaps and live event timelines
+                What we can and can't show
               </div>
-              <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 6 }}>
-                The live clock and in-progress events aren't available on our current plans, so
-                nothing here updates minute by minute. Once the match finishes, goal scorers and
-                their minutes will appear below if we can retrieve them.
+              <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 8, lineHeight: 1.65 }}>
+                <div><strong style={{ color: T.sub }}>Live minute, shot maps and in-progress events</strong> — not
+                available. The clock is a paid feature on our events provider, so nothing here
+                updates minute by minute.</div>
+                <div style={{ marginTop: 6 }}><strong style={{ color: T.sub }}>Goal scorers and their minutes</strong> — shown
+                once the match finishes, for matches that ended within roughly the last two days.</div>
+                <div style={{ marginTop: 6 }}><strong style={{ color: T.sub }}>Half-time, full-time, extra time and
+                penalties</strong> — always shown, for any match however old.</div>
               </div>
             </div>
           </CenterSection>
@@ -2889,7 +2905,7 @@ function FollowCard({ fixture: f, analysis: a, onOpen, onToggleTrack, onResolve,
           </div>
           <div style={{ marginTop: 6, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ ...type.small, color: T.faint, fontSize: 12 }}>{f.competition}</span>
-            {isLive && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: T.live, fontSize: 12, fontWeight: 600 }}><LiveDot size={6} /> live</span>}
+            {isLive && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: T.live, fontSize: 12, fontWeight: 600 }}><LiveDot size={6} /> {isHalfTime(f) ? 'half-time' : 'live'}</span>}
             {section === 'soon' && <Countdown kickoffDate={f.kickoffDate} />}
             {isDone && <span style={{ ...type.small, fontSize: 12, color: T.faint }}>full time</span>}
           </div>
