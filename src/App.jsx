@@ -2276,8 +2276,14 @@ function GoalsSection({ fixture }) {
     return (
       <CenterSection title="Goals">
         <div style={{ ...type.small, color: T.faint }}>
-          Goal details unavailable for this match.
-          {unavailable === 'window' && ' Our events provider only covers the last couple of days.'}
+          {unavailable === 'ratelimit'
+            /* Temporary and self-clearing, so don't call it unavailable — that
+               would read as a fact about the match rather than about us. */
+            ? 'Briefly rate limited by our events provider — reopen this match in a moment.'
+            : <>
+                Goal details unavailable for this match.
+                {unavailable === 'window' && ' Our events provider only covers the last couple of days.'}
+              </>}
         </div>
       </CenterSection>
     )

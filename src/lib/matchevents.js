@@ -30,7 +30,11 @@
 import { readJSON, writeJSON, cacheFresh, LS_GOALS_CACHE, LS_AFDATE_CACHE, AFDATE_TTL_MS } from './storage.js'
 import { nameScore } from './odds.js'
 
-const BASE = '/api/matchevents/v3'
+/* No `/v3` here: the upstream host is v3.football.api-sports.io, so the version
+ * already lives in the hostname. Appending it produced
+ * https://v3.football.api-sports.io/v3/fixtures — a 404 HTML page from their
+ * site, caught only by calling the deployed proxy for real. */
+const BASE = '/api/matchevents'
 
 /* API-Football returns HTTP 200 with the real failure inside `errors`, so this
  * is the only safe way to read a response. Verified against a live plan block. */
@@ -42,8 +46,13 @@ function readEnvelope(data) {
   return {
     ok: !hasErrors,
     errors: hasErrors ? errs : null,
-    // A plan/quota refusal is permanent for this input; a network blip is not.
-    planBlocked: hasErrors && !!(errs.plan || errs.token || errs.requests),
+    /* A plan refusal is permanent for this input and worth caching. A rate-limit
+     * refusal is the opposite — it clears within the minute — so it must never
+     * be cached, and it deserves its own message rather than being reported as
+     * "unavailable". Observed live: {"rateLimit":"Too many requests. Your rate
+     * limit is 10 requests per minute."} arriving, again, inside a 200. */
+    planBlocked: hasErrors && !!(errs.plan || errs.token),
+    rateLimited: hasErrors && !!(errs.rateLimit || errs.requests),
     items: Array.isArray(data?.response) ? data.response : [],
   }
 }
@@ -69,7 +78,10 @@ async function fixturesForDate(dateStr) {
   // No `league` and no `season`: both trigger the free-plan block.
   const env = await call(`fixtures?date=${dateStr}`)
   if (!env.ok) {
-    return { fixtures: [], cached: false, blocked: env.planBlocked, errors: env.errors }
+    return {
+      fixtures: [], cached: false,
+      blocked: env.planBlocked, rateLimited: env.rateLimited, errors: env.errors,
+    }
   }
 
   /* Only what matching and rendering need. The raw payload for a single date is
@@ -180,6 +192,8 @@ export async function getMatchGoals(fixture) {
       store[cacheKey] = entry; writeJSON(LS_GOALS_CACHE, store)
       return { goals: [], unavailable: 'window', cached: false }
     }
+    // Transient: never cached, so reopening a moment later succeeds.
+    if (day.rateLimited) return { goals: [], unavailable: 'ratelimit' }
     if (!day.fixtures.length) return { goals: [], unavailable: 'error' }
 
     const af = findFixture(day.fixtures, fixture)
@@ -197,7 +211,7 @@ export async function getMatchGoals(fixture) {
         return { goals: [], unavailable: 'window', cached: false }
       }
       // Transient — not cached, so it retries next time.
-      return { goals: [], unavailable: 'error' }
+      return { goals: [], unavailable: env.rateLimited ? 'ratelimit' : 'error' }
     }
 
     const goals = goalsFromEvents(env.items)
