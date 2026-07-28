@@ -4738,8 +4738,13 @@ function BrandedLoading({ theme }) {
  * CRASH_DIAGNOSTIC additionally prints the raw error and component stack on
  * screen. It exists because production crashes have to be readable from the
  * live site itself — there is no console access to a user's phone. Flip it to
- * false to keep only the graceful fallback. */
-const CRASH_DIAGNOSTIC = true
+ * false to keep only the graceful fallback.
+ *
+ * It did its job once — it caught "E is not iterable" from the watchIds memo
+ * and gave the stack that led to asList in useFixtures — and is off again: a
+ * raw stack trace is not something to put in front of a reader. Turn it back
+ * on when a live crash needs reading. */
+const CRASH_DIAGNOSTIC = false
 
 class ErrorBoundary extends React.Component {
   constructor(props) {

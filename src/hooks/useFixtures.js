@@ -11,6 +11,13 @@ import {
 /* A throttled fixture-list call used to return [] and render as "nothing on
  * today's slate". Thrown instead so loadFixtures can report it honestly. Module
  * scope, so `instanceof` holds across renders. */
+/* Anything that isn't genuinely an array becomes an empty one. Used on every
+ * value that ends up in the `fixtures` state, because that state is iterated
+ * with for...of and spread in several components — forms of iteration that
+ * throw outright rather than degrading, and a throw during render takes the
+ * whole app down with it. */
+const asList = (v) => (Array.isArray(v) ? v : [])
+
 class RateLimited extends Error {
   constructor(waitMs) {
     super('Rate limited by football-data.org')
@@ -65,7 +72,12 @@ export function useFixtures({ setStatus, setHealth }) {
     }
     if (!res.ok) {
       setHealth('football', { code: res.status, msg: `HTTP ${res.status}`, count: null, at: Date.now() })
-      return []
+      /* Same shape as the success path, always. This used to return a bare `[]`,
+       * which destructured to `{ raw: undefined, matches: undefined }` at every
+       * call site — and on the window-fallback path that undefined reached
+       * setFixtures before anything threw, so the app committed a non-iterable
+       * fixtures state and every consumer of it crashed on the next render. */
+      return { raw: [], matches: [] }
     }
     const data = await res.json()
     /* The RAW items are what gets cached, never the mapped fixtures: mapMatch
@@ -123,9 +135,16 @@ export function useFixtures({ setStatus, setHealth }) {
     }
 
     try {
+      /* Both reads go through asList: a fixture list that isn't a list is not a
+       * state this app can render, and the failure mode is silent — nothing
+       * throws at the assignment, so it surfaces one render later as a crash
+       * with no obvious origin. Coerced here, once, rather than guarded at each
+       * of the dozen places that iterate `fixtures`. */
       let { raw, matches } = await fetchToday()
+      raw = asList(raw); matches = asList(matches)
       if (matches.length === 0 && !useWeekWindow) {
-        ({ raw, matches } = await loadFixturesWindow())
+        const win = await loadFixturesWindow()
+        raw = asList(win?.raw); matches = asList(win?.matches)
       }
       writeJSON(LS_FIXTURES_CACHE, { at: Date.now(), key: cacheKey, raw })
       setFixtures(matches)
@@ -324,7 +343,10 @@ export function useFixtures({ setStatus, setHealth }) {
   }
 
   return {
-    fixtures, fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H,
+    /* Last line of defence. asList returns the same reference when the value is
+     * already an array, so this changes no identity and no dependency array —
+     * it only ensures no caller can ever be handed something it cannot iterate. */
+    fixtures: asList(fixtures), fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H,
     rateLimitedUntil, fixturesFetchedAt,
   }
 }
