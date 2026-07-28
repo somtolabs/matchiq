@@ -121,7 +121,10 @@ const DARK = {
   bad:       '#FF7A66',
   badBg:     'rgba(255,122,102,0.10)',
   live:      '#FF7A66',
-  glow:      '0 0 40px 0 rgba(41,151,255,0.15)',
+  /* Was a 40px blue bloom around the primary button. The accent fill on an
+   * interactive control is functional and stays; a coloured haze bleeding out
+   * of it into the background is decoration, and dark mode carries none. */
+  glow:      'none',
   shadow:    'none',
   shadowLg:  'none',
 }
@@ -147,16 +150,12 @@ function GlobalStyles() {
       /* The theme vars live on the wrapper div, so the page base must paint
          there too — body sits outside the var scope and can't resolve them. */
       [data-theme] { background: var(--iq-bg); min-height: 100vh; min-height: 100dvh; width: 100%; }
-      /* Dark background — one barely-visible neutral wash on a near-black base.
-         Calm and chromatically silent; richness comes from the surfaces above. */
-      [data-theme="dark"] {
-        background:
-          radial-gradient(ellipse 100% 40% at 50% 0%,
-            rgba(255, 255, 255, 0.03),
-            transparent 70%),
-          #0A0A0A;
-        background-attachment: fixed;
-      }
+      /* Dark background: flat #0A0A0A, and nothing else. No wash, no gradient,
+         no attachment trick. Light mode is a flat #FAFAFA and dark is held to
+         exactly the same discipline — depth comes from surface lightness and
+         hairlines, never from an ambient treatment behind the content. This has
+         drifted back toward decoration more than once. It does not come back. */
+      [data-theme="dark"] { background: #0A0A0A; }
 
       /* Glass surfaces — dark mode only, where backdrop-filter exists.
          Tuned for a neutral base; the inset top hairline is the light-catching edge. */
@@ -165,36 +164,29 @@ function GlobalStyles() {
            upper-left corner (radial-gradient at 15% 0%) layered over the fill,
            plus a two-axis inset edge — closer to light catching a curved glass
            surface than a flat line across the whole top edge. */
+        /* Dark surfaces are one flat neutral white at low alpha. A card is
+           lighter than the page because that is what makes it legible as a
+           card, and for no other reason. The specular radial glint and the
+           top-to-bottom linear fade are both gone: they are multi-tone
+           treatments. saturate() is gone too — it exists to pull colour out of
+           whatever sits behind the surface, which is decoration by definition.
+           blur() stays; it is legibility for bars sitting over content. */
         [data-theme="dark"] .iq-glass,
         [data-theme="dark"] .iq-bar {
-          background-color: transparent !important;
-          background-image:
-            radial-gradient(circle at 15% 0%,
-              rgba(255, 255, 255, 0.06), transparent 40%),
-            linear-gradient(180deg,
-              rgba(255, 255, 255, 0.05),
-              rgba(255, 255, 255, 0.03)) !important;
-          backdrop-filter: blur(20px) saturate(120%) !important;
-          -webkit-backdrop-filter: blur(20px) saturate(120%) !important;
+          background-color: rgba(255, 255, 255, 0.04) !important;
+          background-image: none !important;
+          backdrop-filter: blur(20px) !important;
+          -webkit-backdrop-filter: blur(20px) !important;
           border-color: rgba(255, 255, 255, 0.09) !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255, 255, 255, 0.08),
-            inset 1px 1px 0 rgba(255, 255, 255, 0.05) !important;
+          box-shadow: none !important;
         }
         [data-theme="dark"] .iq-elevated {
-          background-color: transparent !important;
-          background-image:
-            radial-gradient(circle at 15% 0%,
-              rgba(255, 255, 255, 0.09), transparent 42%),
-            linear-gradient(180deg,
-              rgba(255, 255, 255, 0.07),
-              rgba(255, 255, 255, 0.04)) !important;
-          backdrop-filter: blur(30px) saturate(140%) !important;
-          -webkit-backdrop-filter: blur(30px) saturate(140%) !important;
+          background-color: rgba(255, 255, 255, 0.07) !important;
+          background-image: none !important;
+          backdrop-filter: blur(30px) !important;
+          -webkit-backdrop-filter: blur(30px) !important;
           border-color: rgba(255, 255, 255, 0.12) !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255, 255, 255, 0.11),
-            inset 1px 1px 0 rgba(255, 255, 255, 0.07) !important;
+          box-shadow: none !important;
         }
         [data-theme="light"] .iq-glass,
         [data-theme="light"] .iq-bar {
@@ -231,14 +223,10 @@ function GlobalStyles() {
         /* Floating nav — scrolled state: stronger blur + slightly more opaque
            fill so the bar reads as a distinct layer above the moving content. */
         [data-theme="dark"] .iq-bar.iq-bar-scrolled {
-          backdrop-filter: blur(28px) saturate(140%) !important;
-          -webkit-backdrop-filter: blur(28px) saturate(140%) !important;
-          background-image:
-            radial-gradient(circle at 15% 0%,
-              rgba(255, 255, 255, 0.06), transparent 40%),
-            linear-gradient(180deg,
-              rgba(255, 255, 255, 0.07),
-              rgba(255, 255, 255, 0.05)) !important;
+          backdrop-filter: blur(28px) !important;
+          -webkit-backdrop-filter: blur(28px) !important;
+          background-color: rgba(255, 255, 255, 0.07) !important;
+          background-image: none !important;
         }
         [data-theme="light"] .iq-bar.iq-bar-scrolled {
           backdrop-filter: blur(28px) saturate(160%) !important;
@@ -275,23 +263,40 @@ function GlobalStyles() {
         [data-theme="light"] .iq-elevated { background: rgba(255, 255, 255, 0.92) !important; }
       }
 
-      /* Accent glow on the verdict headline only (primary button gets it via --iq-glow) */
+      /* .iq-halo used to paint a 40px blue bloom behind the verdict headline,
+         the high-conviction pick card and the profile avatar. That is ambient
+         accent colour spilling into the background, which is precisely what
+         dark mode may not do. The class stays as a positioning context so its
+         call sites are unchanged; it no longer paints anything. */
       .iq-halo { position: relative; }
-      [data-theme="dark"] .iq-halo {
-        box-shadow: 0 0 40px 0 rgba(41, 151, 255, 0.15);
-        border-radius: 28px;
-      }
       *, *::before, *::after { box-sizing: border-box; overflow-wrap: break-word; }
       button { font-family: inherit; }
       a { color: inherit; }
+
+      /* Mobile browsers paint their own flash on tap, and it is a rectangle of
+         the element's border box — it ignores border-radius entirely, so every
+         pill button, every circular avatar and every rounded row flashed
+         square. Turned off globally rather than per component, so nothing can
+         be missed; the app's own pressed states follow each element's shape. */
+      html { -webkit-tap-highlight-color: transparent; }
+      *, *::before, *::after { -webkit-tap-highlight-color: transparent; }
+      /* Backgrounds are already clipped to their own border-radius by the
+         browser, and the app draws no separate ripple or highlight layer that
+         could escape one, so nothing further is needed here. */
 
       [data-theme] * {
         transition: background-color 300ms ${T.ease}, color 300ms ${T.ease},
           border-color 300ms ${T.ease}, box-shadow 300ms ${T.ease};
       }
       *:focus { outline: none; }
+      /* The focus ring follows the element's own radius, because browsers curve
+         an outline to match border-radius on their own. This rule used to set
+         a border-radius of 10px, which did not round the ring so much as
+         overwrite the element's real shape while focused: a 999px pill and a
+         50% circular avatar both snapped to a 10px rounded rectangle and sprang
+         back on blur. That is the square outline seen on round buttons. */
       button:focus-visible, a:focus-visible, [tabindex]:focus-visible, summary:focus-visible {
-        outline: 2px solid ${T.accent}; outline-offset: 3px; border-radius: 10px;
+        outline: 2px solid ${T.accent}; outline-offset: 3px;
       }
       ::selection { background: ${T.accentBg}; }
 
@@ -729,8 +734,10 @@ function LiveDot({ size = 8 }) {
 function PulseDot({ size = 7 }) {
   return (
     <span className="iq-livedot" aria-label="In play" style={{
+      // The dot itself is the signal, and the accent on it is functional. The
+      // 8px accent bloom it used to cast around itself was not — it was colour
+      // in the background, which is the one thing dark mode does not carry.
       width: size, height: size, borderRadius: '50%', background: T.accent,
-      boxShadow: `0 0 8px 2px color-mix(in oklab, ${T.accent} 30%, transparent)`,
       display: 'inline-block', flexShrink: 0,
     }} />
   )
@@ -819,7 +826,7 @@ function Header({ theme, onToggleTheme, tab, onTab, isMobile, liveCount, user, a
     <header className={`iq-bar iq-bar-top${scrolled ? ' iq-bar-scrolled' : ''}`} style={{
       position: 'sticky', top: 0, zIndex: 100,
       background: `color-mix(in oklab, ${T.bg} 82%, transparent)`,
-      backdropFilter: 'saturate(1.6) blur(18px)', WebkitBackdropFilter: 'saturate(1.6) blur(18px)',
+      backdropFilter: 'blur(18px)', WebkitBackdropFilter: 'blur(18px)',
       borderBottom: `1px solid ${T.line}`,
       // Extend the bar's surface up into the notch/status-bar area so the top
       // edge blends with the phone rather than showing a seam above the header.
@@ -892,7 +899,7 @@ function MobileNav({ tab, onTab }) {
     <nav className={`iq-bar iq-bar-bottom${scrolled ? ' iq-bar-scrolled' : ''}`} style={{
       position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 100,
       background: `color-mix(in oklab, ${T.card} 88%, transparent)`,
-      backdropFilter: 'saturate(1.6) blur(20px)', WebkitBackdropFilter: 'saturate(1.6) blur(20px)',
+      backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
       borderTop: `1px solid ${T.line}`,
       display: 'flex', height: 58,
       paddingBottom: 'env(safe-area-inset-bottom, 0px)',
@@ -1137,7 +1144,7 @@ function NewsStrip({ articles }) {
 
 function MatchesScreen({
   fixtures, fixturesLoading, fixturesError, onRetry, rateLimitedUntil,
-  fixturesUnavailable, fixturesRetryAt,
+  fixturesUnavailable, fixturesRetryAt, fixturesWindowed,
   analysisCache, tracked, onOpen, onToggleTrack,
   standingsCache, scorersCache, compDetailsCache, headlines,
 }) {
@@ -1267,12 +1274,21 @@ function MatchesScreen({
     )
   }
 
-  /* Hero copy — every word computed from real data, never a placeholder */
+  /* Hero copy — every word computed from real data, never a placeholder.
+   *
+   * `fixturesWindowed` is the difference between a true sentence and a false
+   * one. When today has no matches the loader falls back to the next ten days,
+   * and the list that comes back was being announced as "N matches today" —
+   * football that isn't on today, called today's. Consecutive days also share
+   * most of a ten-day window, which is why the same clubs kept reappearing
+   * visit after visit and read as a cache that never refreshed. */
   const headline = topPick
-    ? `${topPick.fx.homeTeam} vs ${topPick.fx.awayTeam} is today's sharpest read.`
+    ? `${topPick.fx.homeTeam} vs ${topPick.fx.awayTeam} is ${fixturesWindowed ? 'the sharpest read on the board' : "today's sharpest read"}.`
     : fixtures.length === 0
       ? 'A quiet day — nothing on the slate.'
-      : `${fixtures.length} ${fixtures.length === 1 ? 'match' : 'matches'} today across ${compOptions.length} ${compOptions.length === 1 ? 'competition' : 'competitions'}.`
+      : fixturesWindowed
+        ? `Nothing on today — the next ${fixtures.length} ${fixtures.length === 1 ? 'match' : 'matches'} across ${compOptions.length} ${compOptions.length === 1 ? 'competition' : 'competitions'}.`
+        : `${fixtures.length} ${fixtures.length === 1 ? 'match' : 'matches'} today across ${compOptions.length} ${compOptions.length === 1 ? 'competition' : 'competitions'}.`
   const dateLine = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
   const topConf = topPick ? Math.round((topPick.a.recommendation.confidence || 0) * 100) : 0
   const topEdge = topPick ? (topPick.a.recommendation.value_edge || 0) : 0
@@ -1311,7 +1327,7 @@ function MatchesScreen({
             <Card onClick={() => onOpen(topPick.fx)}
               className={`iq-elevated iq-lift${highConviction ? ' iq-halo' : ''}`}
               style={{ padding: 32, cursor: 'pointer' }}>
-              <Eyebrow style={{ color: T.accent }}>Today's sharpest read</Eyebrow>
+              <Eyebrow style={{ color: T.accent }}>{fixturesWindowed ? 'Sharpest read on the board' : "Today's sharpest read"}</Eyebrow>
               <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 16 }}>
                 <Crest src={topPick.fx.homeLogo} name={topPick.fx.homeTeam} size={26} />
                 <Crest src={topPick.fx.awayLogo} name={topPick.fx.awayTeam} size={26} />
@@ -4304,7 +4320,6 @@ function ProfileScreen({
         <div style={{
           textAlign: 'center', padding: isMobile ? '52px 20px 40px' : '72px 20px 52px',
           marginBottom: 8, borderRadius: 24, position: 'relative', overflow: 'hidden',
-          background: `radial-gradient(ellipse 90% 70% at 50% 0%, color-mix(in oklab, ${T.ink} 5%, transparent), transparent 70%)`,
         }}>
           <div style={{ display: 'inline-block', position: 'relative' }}>
             <button onClick={() => setPickerOpen(o => !o)} aria-label="Edit avatar"
@@ -4949,7 +4964,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
   const { apiStatus, apiHealth, setStatus, setHealth } = useApiHealth()
   const {
     fixtures, fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H,
-    rateLimitedUntil, fixturesFetchedAt, fixturesUnavailable, fixturesRetryAt,
+    rateLimitedUntil, fixturesFetchedAt, fixturesUnavailable, fixturesRetryAt, fixturesWindowed,
   } = useFixtures({ setStatus, setHealth })
 
   const [diagOpen, setDiagOpen] = useState(() => readRaw(LS_DIAG_OPEN) !== '0')
@@ -5568,6 +5583,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
         fixtures={fixtures} fixturesLoading={fixturesLoading} fixturesError={fixturesError}
         rateLimitedUntil={rateLimitedUntil}
         fixturesUnavailable={fixturesUnavailable} fixturesRetryAt={fixturesRetryAt}
+        fixturesWindowed={fixturesWindowed}
         onRetry={() => loadFixtures(false, { force: true })}
         analysisCache={analysisCache} tracked={tracked}
         onOpen={openFixture} onToggleTrack={toggleTracked}

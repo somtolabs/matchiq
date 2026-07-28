@@ -69,6 +69,12 @@ export function useFixtures({ setStatus, setHealth }) {
   const [fixturesUnavailable, setFixturesUnavailable] = useState(false)
   const [fixturesRetryAt, setFixturesRetryAt] = useState(0)
   const failureCountRef = useRef(0)
+  /* True when the list on screen is the 10-day fallback rather than today's
+   * matches. Nothing about the fixtures themselves says which they are, so
+   * without this the homepage calls ten days of football "today" — and because
+   * consecutive days share most of a ten-day window, the same clubs come back
+   * visit after visit looking like a cache that never refreshed. */
+  const [fixturesWindowed, setFixturesWindowed] = useState(false)
 
   async function fetchRange(fromStr, toStr) {
     let res
@@ -158,9 +164,23 @@ export function useFixtures({ setStatus, setHealth }) {
 
     if (!force) {
       const cached = readJSON(LS_FIXTURES_CACHE, null)
-      if (cached?.key === cacheKey && cacheFresh(cached, FIXTURES_TTL_MS) && Array.isArray(cached.raw)) {
+      /* Two independent conditions, deliberately not one.
+       *
+       * The date check comes first and does not consult the TTL at all: an
+       * entry written for a different calendar day is wrong no matter how
+       * recently it was written. A cache saved at 23:59 is 60 seconds old at
+       * 00:01, well inside the three-minute window, but it holds yesterday's
+       * football. `cached.day` is checked alongside the key because the key is
+       * what the fetch was for and `day` is what the data is about — a stored
+       * entry from before this field existed has no `day` and is refetched
+       * rather than trusted.
+       *
+       * The TTL then handles the ordinary case: same day, but scores move. */
+      const sameDay = cached?.key === cacheKey && cached?.day === today
+      if (sameDay && cacheFresh(cached, FIXTURES_TTL_MS) && Array.isArray(cached.raw)) {
         const matches = cached.raw.map(mapMatch).filter(Boolean)
         setFixtures(matches)
+        setFixturesWindowed(!!cached.windowed)
         setStatus('football', 'operational')
         setRateLimitedUntil(0)
         setHealth('football', {
@@ -190,10 +210,12 @@ export function useFixtures({ setStatus, setHealth }) {
        * back empty. If the day call never answered, matches is empty for a
        * different reason, and spending a second request to be told the same
        * thing wastes a tenth of the minute's budget. */
+      let windowed = useWeekWindow
       if (ok && matches.length === 0 && !useWeekWindow) {
         const win = await loadFixturesWindow()
         raw = asList(win?.raw); matches = asList(win?.matches)
         ok = win?.ok !== false
+        windowed = matches.length > 0
       }
 
       if (!ok) {
@@ -207,8 +229,12 @@ export function useFixtures({ setStatus, setHealth }) {
       }
 
       clearFetchFailure()
-      writeJSON(LS_FIXTURES_CACHE, { at: Date.now(), key: cacheKey, raw })
+      /* `day` is stamped so the read side can reject the entry on a date
+       * rollover without reasoning about the key format, and `windowed` so a
+       * cache hit knows whether it is holding today's matches or the fallback. */
+      writeJSON(LS_FIXTURES_CACHE, { at: Date.now(), key: cacheKey, day: today, windowed, raw })
       setFixtures(matches)
+      setFixturesWindowed(windowed)
       setFixturesFetchedAt(Date.now())
       setStatus('football', 'operational')
       setRateLimitedUntil(0)
@@ -419,6 +445,6 @@ export function useFixtures({ setStatus, setHealth }) {
      * already an array, so this changes no identity and no dependency array —
      * it only ensures no caller can ever be handed something it cannot iterate. */
     fixtures: asList(fixtures), fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H,
-    rateLimitedUntil, fixturesFetchedAt, fixturesUnavailable, fixturesRetryAt,
+    rateLimitedUntil, fixturesFetchedAt, fixturesUnavailable, fixturesRetryAt, fixturesWindowed,
   }
 }
