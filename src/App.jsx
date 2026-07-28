@@ -2071,7 +2071,7 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
  * are not the same fact and must not share a message. */
 function HeadToHead({ fixture: fx }) {
   const rows = h2hRows(fx, 6)
-  const summary = fx.h2h?.summary
+  const summary = fx?.h2h?.summary
   const neverMet = summary === 'No prior meetings on record'
 
   return (
@@ -4725,7 +4725,102 @@ function BrandedLoading({ theme }) {
   )
 }
 
-export default function AuthRoot() {
+/* ---------------- crash containment ----------------
+ *
+ * React 18 unmounts the entire tree when a render throws and nothing catches
+ * it. The root div is left empty, so the page goes blank — no message, no
+ * loading state, nothing in front of the user, and the only trace is a console
+ * entry they will never open. That is what a "white screen" is.
+ *
+ * This boundary sits above every screen, including onboarding, so any
+ * render-time throw becomes a readable page instead of an empty one.
+ *
+ * CRASH_DIAGNOSTIC additionally prints the raw error and component stack on
+ * screen. It exists because production crashes have to be readable from the
+ * live site itself — there is no console access to a user's phone. Flip it to
+ * false to keep only the graceful fallback. */
+const CRASH_DIAGNOSTIC = true
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props)
+    this.state = { error: null, stack: null }
+  }
+
+  static getDerivedStateFromError(error) {
+    return { error }
+  }
+
+  componentDidCatch(error, info) {
+    // Logged as well as shown: whoever does have a console gets the full object.
+    console.error('[MatchIQ] render crash:', error, info?.componentStack)
+    this.setState({ stack: info?.componentStack || null })
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+    return <CrashScreen error={this.state.error} stack={this.state.stack} />
+  }
+}
+
+/* What a crash looks like to the reader. Deliberately plain: it does not
+ * pretend the app is fine, and it does not blame them. */
+function CrashScreen({ error, stack }) {
+  const theme = (typeof document !== 'undefined'
+    && document.documentElement.getAttribute('data-theme')) || 'dark'
+  const message = (error && (error.message || String(error))) || 'Unknown error'
+
+  return (
+    <div data-theme={theme} style={{ minHeight: '100dvh', width: '100%' }}>
+      <GlobalStyles />
+      <div style={{ maxWidth: 720, margin: '0 auto', padding: '72px 24px 64px' }}>
+        <Wordmark size={22} />
+        <h1 style={{ ...type.display, fontSize: 32, color: T.ink, margin: '32px 0 0' }}>
+          Something broke on this screen.
+        </h1>
+        <div style={{ ...type.body, fontSize: 16, color: T.sub, marginTop: 14 }}>
+          This is a fault in MatchIQ, not in anything you did. Reloading usually
+          gets you back in.
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 24, flexWrap: 'wrap' }}>
+          <Button onClick={() => window.location.reload()}>Reload</Button>
+        </div>
+
+        {CRASH_DIAGNOSTIC && (
+          <div style={{
+            marginTop: 34, border: `1px solid ${T.line}`, borderRadius: 14,
+            padding: 20, background: T.card2,
+          }}>
+            <Eyebrow style={{ color: T.bad }}>Diagnostic — temporary</Eyebrow>
+            <div style={{ ...type.small, fontSize: 12.5, marginTop: 8 }}>
+              Copy everything below and send it over. It is here so the fault can
+              be read off the live site, and it will be removed once it is fixed.
+            </div>
+            <pre style={{
+              ...type.num, fontSize: 11.5, color: T.ink, marginTop: 14,
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+              maxHeight: 380, overflow: 'auto',
+            }}>
+{message}
+{error && error.stack ? `\n\n${error.stack}` : ''}
+{stack ? `\n\nComponent stack:${stack}` : ''}
+            </pre>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AuthRoot />
+    </ErrorBoundary>
+  )
+}
+
+function AuthRoot() {
   const [theme] = useTheme()
   const { user, loading, authError, setAuthError, recovery, clearRecovery } = useAuth()
 
