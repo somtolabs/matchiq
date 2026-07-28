@@ -8,9 +8,6 @@ import {
   FOOTBALL_RATE_LIMIT, todayKey, localDayUtcRange,
 } from '../lib/football.js'
 
-/* A throttled fixture-list call used to return [] and render as "nothing on
- * today's slate". Thrown instead so loadFixtures can report it honestly. Module
- * scope, so `instanceof` holds across renders. */
 /* Anything that isn't genuinely an array becomes an empty one. Used on every
  * value that ends up in the `fixtures` state, because that state is iterated
  * with for...of and spread in several components — forms of iteration that
@@ -18,12 +15,24 @@ import {
  * whole app down with it. */
 const asList = (v) => (Array.isArray(v) ? v : [])
 
+/* A throttled fixture-list call used to return [] and render as "nothing on
+ * today's slate". Thrown instead so loadFixtures can report it honestly. Module
+ * scope, so `instanceof` holds across renders. */
 class RateLimited extends Error {
   constructor(waitMs) {
     super('Rate limited by football-data.org')
     this.waitMs = waitMs
   }
 }
+
+/* How long to wait before trying a failed fixture list again, backing off per
+ * consecutive failure. The free tier allows 10 requests a minute, so retrying
+ * a provider that is down at anything like that rate spends the whole budget
+ * on failures and leaves none for the reader when it recovers. */
+const RETRY_BASE_MS = 20000
+const RETRY_MAX_MS = 5 * 60 * 1000
+const retryDelayMs = (failures) =>
+  Math.min(RETRY_BASE_MS * 2 ** Math.max(0, failures - 1), RETRY_MAX_MS)
 
 /* Fixture loading + team form enrichment + head-to-head on selection.
  *
@@ -48,6 +57,18 @@ export function useFixtures({ setStatus, setHealth }) {
   /* When the list last came off the network (not the cache) — lets App.jsx skip
    * the mount status-refresh that would otherwise duplicate the call. */
   const [fixturesFetchedAt, setFixturesFetchedAt] = useState(0)
+  /* True when the last list call reached football-data.org and came back with a
+   * status that carried no data. This is the state that used to be invisible:
+   * the call returned an empty list, and an empty list renders as "a quiet day
+   * — nothing on the slate", which states something about the football rather
+   * than about the request. A day with genuinely no matches is a 200 with zero
+   * matches and leaves this false, so the two can be told apart.
+   *
+   * Separate from fixturesError, which is for failures the reader has to act on
+   * (a rejected API key); this one resolves itself, and says so. */
+  const [fixturesUnavailable, setFixturesUnavailable] = useState(false)
+  const [fixturesRetryAt, setFixturesRetryAt] = useState(0)
+  const failureCountRef = useRef(0)
 
   async function fetchRange(fromStr, toStr) {
     let res
@@ -76,8 +97,12 @@ export function useFixtures({ setStatus, setHealth }) {
        * which destructured to `{ raw: undefined, matches: undefined }` at every
        * call site — and on the window-fallback path that undefined reached
        * setFixtures before anything threw, so the app committed a non-iterable
-       * fixtures state and every consumer of it crashed on the next render. */
-      return { raw: [], matches: [] }
+       * fixtures state and every consumer of it crashed on the next render.
+       *
+       * `ok: false` is what makes the empty list legible to the caller. Without
+       * it the two reasons a list can be empty — nothing was scheduled, and we
+       * never got an answer — arrive indistinguishable. */
+      return { ok: false, raw: [], matches: [] }
     }
     const data = await res.json()
     /* The RAW items are what gets cached, never the mapped fixtures: mapMatch
@@ -86,7 +111,7 @@ export function useFixtures({ setStatus, setHealth }) {
     const raw = data.matches || []
     const matches = raw.map(mapMatch).filter(Boolean)
     setHealth('football', { code: 200, msg: `OK · ${fromStr} → ${toStr}`, count: matches.length, at: Date.now() })
-    return { raw, matches }
+    return { ok: true, raw, matches }
   }
 
   /* "Today" means the viewer's calendar day, not UTC's. `toISOString()` on the
@@ -102,6 +127,21 @@ export function useFixtures({ setStatus, setHealth }) {
   async function loadFixturesWindow() {
     const { from, to } = localDayUtcRange(10)
     return fetchRange(from, to)
+  }
+
+  /* The two ends of the unavailable state. Kept as a pair so the flag, the
+   * retry time and the backoff counter can never disagree with each other. */
+  function noteFetchFailure() {
+    const n = failureCountRef.current + 1
+    failureCountRef.current = n
+    setFixturesUnavailable(true)
+    setFixturesRetryAt(Date.now() + retryDelayMs(n))
+  }
+
+  function clearFetchFailure() {
+    failureCountRef.current = 0
+    setFixturesUnavailable(false)
+    setFixturesRetryAt(0)
   }
 
   /* Refreshing repeatedly was the reported failure: each refresh re-fired the
@@ -129,6 +169,7 @@ export function useFixtures({ setStatus, setHealth }) {
           count: matches.length, at: Date.now(),
         })
         setFixturesLoading(false)
+        clearFetchFailure()
         loadTeamForms(matches.slice(0, 10))
         return
       }
@@ -140,12 +181,32 @@ export function useFixtures({ setStatus, setHealth }) {
        * throws at the assignment, so it surfaces one render later as a crash
        * with no obvious origin. Coerced here, once, rather than guarded at each
        * of the dozen places that iterate `fixtures`. */
-      let { raw, matches } = await fetchToday()
-      raw = asList(raw); matches = asList(matches)
-      if (matches.length === 0 && !useWeekWindow) {
+      const day = await fetchToday()
+      let raw = asList(day?.raw)
+      let matches = asList(day?.matches)
+      let ok = day?.ok !== false
+
+      /* The window fallback only earns its request when today genuinely came
+       * back empty. If the day call never answered, matches is empty for a
+       * different reason, and spending a second request to be told the same
+       * thing wastes a tenth of the minute's budget. */
+      if (ok && matches.length === 0 && !useWeekWindow) {
         const win = await loadFixturesWindow()
         raw = asList(win?.raw); matches = asList(win?.matches)
+        ok = win?.ok !== false
       }
+
+      if (!ok) {
+        /* Nothing is written to the cache and nothing on screen is replaced: an
+         * empty list from a failed call is not evidence that the day is empty,
+         * and caching it would keep asserting that for the next three minutes.
+         * Whatever the reader already has stays, and the retry is automatic. */
+        noteFetchFailure()
+        setStatus('football', 'degraded')
+        return
+      }
+
+      clearFetchFailure()
       writeJSON(LS_FIXTURES_CACHE, { at: Date.now(), key: cacheKey, raw })
       setFixtures(matches)
       setFixturesFetchedAt(Date.now())
@@ -187,6 +248,17 @@ export function useFixtures({ setStatus, setHealth }) {
     }, ms)
     return () => clearTimeout(t)
   }, [listRateLimited, rateLimitedUntil])
+
+  /* The same automatic recovery for a provider that answered but had nothing to
+   * give. noteFetchFailure moves fixturesRetryAt forward on every consecutive
+   * failure, so a retry that fails again re-arms this effect at a longer delay
+   * rather than looping — and a success clears the flag, which stops it. */
+  useEffect(() => {
+    if (!fixturesUnavailable || !fixturesRetryAt) return
+    const ms = Math.max(0, fixturesRetryAt - Date.now()) + 250
+    const t = setTimeout(() => loadRef.current(false, { force: true }), ms)
+    return () => clearTimeout(t)
+  }, [fixturesUnavailable, fixturesRetryAt])
 
   /* A 429 raised by any other call — form, standings, H2H — should surface in the
    * same honest state rather than passing silently. */
@@ -347,6 +419,6 @@ export function useFixtures({ setStatus, setHealth }) {
      * already an array, so this changes no identity and no dependency array —
      * it only ensures no caller can ever be handed something it cannot iterate. */
     fixtures: asList(fixtures), fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H,
-    rateLimitedUntil, fixturesFetchedAt,
+    rateLimitedUntil, fixturesFetchedAt, fixturesUnavailable, fixturesRetryAt,
   }
 }

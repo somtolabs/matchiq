@@ -1137,6 +1137,7 @@ function NewsStrip({ articles }) {
 
 function MatchesScreen({
   fixtures, fixturesLoading, fixturesError, onRetry, rateLimitedUntil,
+  fixturesUnavailable, fixturesRetryAt,
   analysisCache, tracked, onOpen, onToggleTrack,
   standingsCache, scorersCache, compDetailsCache, headlines,
 }) {
@@ -1211,6 +1212,7 @@ function MatchesScreen({
   }, [groups, topPick])
 
   const holdSecs = useCountdown(rateLimitedUntil)
+  const retrySecs = useCountdown(fixturesRetryAt)
 
   if (fixturesLoading) return <MatchesSkeleton />
 
@@ -1227,6 +1229,28 @@ function MatchesScreen({
         <div style={{ ...type.small, margin: '10px 0 20px' }}>
           The fixture provider caps requests per minute on this plan. Retrying automatically
           {holdSecs > 0 ? ` in ${holdSecs}s` : ' now'} — no need to refresh.
+        </div>
+        <Button onClick={onRetry} kind="soft">Retry now</Button>
+      </Card>
+    )
+  }
+
+  /* The provider answered, but not with matches. An empty list from a failed
+   * call and an empty list from a real one look identical in the data, so the
+   * old code rendered both as "a quiet day — nothing on the slate": a claim
+   * about the football, made on the strength of a request that failed. This
+   * says what actually happened instead. Only when there is nothing cached to
+   * show — real fixtures already on screen are worth more than this notice. */
+  if (fixturesUnavailable && fixtures.length === 0) {
+    return (
+      <Card style={{ padding: 32 }}>
+        <div style={{ ...type.title, fontSize: 21, color: T.ink }}>
+          We couldn't load today's matches
+        </div>
+        <div style={{ ...type.small, margin: '10px 0 20px' }}>
+          This is football-data.org not answering, not a quiet day — we don't know
+          yet what's on. Trying again automatically
+          {retrySecs > 0 ? ` in ${retrySecs}s` : ' now'}.
         </div>
         <Button onClick={onRetry} kind="soft">Retry now</Button>
       </Card>
@@ -4925,7 +4949,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
   const { apiStatus, apiHealth, setStatus, setHealth } = useApiHealth()
   const {
     fixtures, fixturesLoading, fixturesError, loadFixtures, refreshFixtures, h2hCache, loadH2H,
-    rateLimitedUntil, fixturesFetchedAt,
+    rateLimitedUntil, fixturesFetchedAt, fixturesUnavailable, fixturesRetryAt,
   } = useFixtures({ setStatus, setHealth })
 
   const [diagOpen, setDiagOpen] = useState(() => readRaw(LS_DIAG_OPEN) !== '0')
@@ -5543,6 +5567,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
       <MatchesScreen
         fixtures={fixtures} fixturesLoading={fixturesLoading} fixturesError={fixturesError}
         rateLimitedUntil={rateLimitedUntil}
+        fixturesUnavailable={fixturesUnavailable} fixturesRetryAt={fixturesRetryAt}
         onRetry={() => loadFixtures(false, { force: true })}
         analysisCache={analysisCache} tracked={tracked}
         onOpen={openFixture} onToggleTrack={toggleTracked}
