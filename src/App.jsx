@@ -21,7 +21,7 @@ import {
 } from './lib/groq.js'
 import {
   calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve, countsTowardRecord,
-  edgeToOutcome, AGENT_PERF_EMPTY,
+  edgeToOutcome, AGENT_PERF_EMPTY, hasVerdict, sanitizeAnalysisCache,
 } from './lib/analysis.js'
 import {
   lookupOddsForFixture, sportKeysForFixtures, readOddsStore, writeOddsStore, nameScore,
@@ -2873,7 +2873,9 @@ function ComboSlip({ selections, entries, onRemove, onClear }) {
 
       <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 7 }}>
         {chosen.map(e => {
-          if (!e.fx) return null
+          // Same pairing as Best Bets: a slip row needs both a fixture and a
+          // verdict, and reads the pick straight off the recommendation.
+          if (!e.fx || !hasVerdict(e.a)) return null
           const label = pickShort(e.a.recommendation.pick, e.fx)
           return (
             <div key={e.id} style={{
@@ -2941,7 +2943,11 @@ function BestBetsScreen({ fixtures, analysisCache, onOpen, comboSelections, onTo
         const fx = fixtures.find(f => String(f.id) === String(id))
         return { id: fx?.id ?? id, fx, a }
       })
-      .filter(e => e.fx)
+      /* Both halves matter. `e.fx` drops reads whose fixture has aged off the
+       * card; `hasVerdict` drops reads with no verdict to show. BetCard below
+       * reads `a.recommendation.confidence` with no optional chaining, and this
+       * filter is what guarantees it never sees an entry without one. */
+      .filter(e => e.fx && hasVerdict(e.a))
       .sort((x, y) => (y.a.recommendation?.confidence || 0) - (x.a.recommendation?.confidence || 0)),
     [fixtures, analysisCache]
   )
@@ -3082,7 +3088,9 @@ function FollowCard({ fixture: f, analysis: a, onOpen, onToggleTrack, onResolve,
           }}><Heart size={17} strokeWidth={1.8} fill="currentColor" /></button>
       </div>
 
-      {a && (
+      {/* `a &&` was not enough: this block reads a.recommendation.pick directly,
+          so it needs the verdict to exist, not merely the analysis. */}
+      {hasVerdict(a) && (
         <div style={{
           marginTop: 14, padding: '11px 16px', background: T.card2, borderRadius: 12,
           display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap',
@@ -4785,18 +4793,18 @@ function BrandedLoading({ theme }) {
  * It did its job once — it caught "E is not iterable" from the watchIds memo
  * and gave the stack that led to asList in useFixtures.
  *
- * ON deliberately, and this is the one thing in this change that is not a fix.
- * Crash-on-tap reports came in alongside the runaway ledger loop, and that loop
- * is confirmed fixed (usePredictionLedger) — but the crash itself was never
- * reproduced: a signed-in sweep of every control on all five tabs, with cached
- * analyses, a live match, a finished match and an analysis whose fixture had
- * aged out of the list, raised the boundary zero times. So there is no captured
- * stack to work from, and no honest basis for calling it fixed.
+ * It earned its keep a second time. Turned on for one deploy, it caught
+ * "Cannot read properties of undefined (reading 'confidence')" off the live
+ * site and gave the frames that resolved, through the build's source map, to
+ * BetCard reading `a.recommendation.confidence` on a cached analysis that had
+ * no recommendation — a crash no synthetic sweep had reproduced because it
+ * needed one specific account's real stored data to exist at all.
  *
- * If the loop was the cause, no reader ever sees this panel, because there is
- * no crash to show it. If it wasn't, the next crash carries its own stack off
- * the live site. Flip to false once a deploy goes by with no fresh reports. */
-const CRASH_DIAGNOSTIC = true
+ * Off again now that the cause is fixed at the writer, at both ingest points
+ * and at all three render sites. The boundary itself stays: it is the reason a
+ * crash is a readable page rather than a white screen. Turn this back on only
+ * when a live crash needs reading. */
+const CRASH_DIAGNOSTIC = false
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -5014,7 +5022,10 @@ function MatchIQ({ user, username, onUsernameChange }) {
     })
   }
 
-  const [analysisCache, setAnalysisCache] = useState(() => readJSON(LS_ANALYSIS, {}))
+  /* Sanitised on the way in, not trusted. This cache is written by a model
+   * response, persisted, and synced across devices, so anything malformed that
+   * ever reached it stays there indefinitely and comes back on every load. */
+  const [analysisCache, setAnalysisCache] = useState(() => sanitizeAnalysisCache(readJSON(LS_ANALYSIS, {})))
   const [tracked, setTracked] = useState(() => new Set(readJSON(LS_TRACKED, [])))
 
   useEffect(() => { writeJSON(LS_ANALYSIS, analysisCache) }, [analysisCache])
@@ -5078,7 +5089,10 @@ function MatchIQ({ user, username, onUsernameChange }) {
     }
     if (row.analysis_cache && typeof row.analysis_cache === 'object') {
       // Local entries win per fixture — they're at least as fresh as the remote copy.
-      setAnalysisCache(prev => ({ ...row.analysis_cache, ...prev }))
+      // Sanitised first: the remote row is the other way a bad entry arrives, and
+      // on a second device it is the ONLY way, so filtering local storage alone
+      // would let the account re-infect itself on the next sign-in.
+      setAnalysisCache(prev => ({ ...sanitizeAnalysisCache(row.analysis_cache), ...prev }))
     }
     if (row.agent_perf && typeof row.agent_perf === 'object' && Object.keys(row.agent_perf).length) {
       setAgentPerf(prev => {
@@ -5510,6 +5524,17 @@ function MatchIQ({ user, username, onUsernameChange }) {
         throw new Error('The model ran out of room before finishing its answer. Try again.')
       }
       const parsed = extractFirstJsonObject(data.choices?.[0]?.message?.content)
+      /* Parsed is not the same as usable. The model can return well-formed JSON
+       * that simply has no `recommendation` — the guard immediately below has
+       * always allowed for it — and that object was then cached and synced
+       * anyway. Every screen that lists cached reads dereferences
+       * `recommendation.pick` and `.confidence` directly, so one such entry is a
+       * permanent crash on Best Bets for that account, on any day its fixture is
+       * back on the card. This is where that entry stops being created. */
+      if (!hasVerdict(parsed)) {
+        console.error('[groq] synthesis returned JSON with no usable recommendation — not cached')
+        throw new Error(ANALYSIS_INCOMPLETE_MESSAGE)
+      }
       // Guard the one number the model is most prone to inventing: with no odds
       // there is no market probability to compare against, so there is no edge.
       if (parsed.recommendation && fx.odds?.home == null) {

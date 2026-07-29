@@ -95,6 +95,51 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
   return results.filter(r => r.status === 'fulfilled').map(r => r.value)
 }
 
+/* ---------- is this stored analysis renderable? ----------
+ *
+ * `recommendation` is the verdict, and it is what the screens actually reach
+ * for. Best Bets, the combo slip and the Following rows all read
+ * `recommendation.pick` and `recommendation.confidence` directly, with no
+ * optional chaining — so an entry that reached the cache without one is not a
+ * degraded analysis, it is a render crash waiting for its fixture to appear on
+ * the card again. That is exactly what happened: `Cannot read properties of
+ * undefined (reading 'confidence')` at BetCard, on one account only, because
+ * only that account's cache held such an entry.
+ *
+ * `pick` is the field tested rather than the mere presence of the object,
+ * because `pickHeadline(r.pick)` and `pickShort(r.pick)` are what those screens
+ * call, and a recommendation with no pick renders as nothing useful anyway. */
+export function hasVerdict(a) {
+  return !!a && !!a.recommendation && typeof a.recommendation === 'object'
+    && typeof a.recommendation.pick === 'string' && a.recommendation.pick.length > 0
+}
+
+/* Drops cache entries that can't be rendered, wherever the cache is ingested.
+ *
+ * This is the half of the fix that reaches data already in the wild. A bad
+ * entry lives in localStorage AND in the account's Supabase `user_data` row, so
+ * repairing the writer alone would leave every affected account still crashing.
+ * Filtering on ingest means the bad row is gone from state on the next load,
+ * and useUserData's debounced push then writes the cleaned cache back — the
+ * account repairs itself without anyone clearing storage by hand.
+ *
+ * Deliberately silent about the football and loud in the console: dropping an
+ * entry is a real loss of a stored read, and it should be visible to whoever
+ * looks, not papered over. */
+export function sanitizeAnalysisCache(cache) {
+  if (!cache || typeof cache !== 'object') return {}
+  const clean = {}
+  const dropped = []
+  for (const [id, a] of Object.entries(cache)) {
+    if (hasVerdict(a)) clean[id] = a
+    else dropped.push(id)
+  }
+  if (dropped.length) {
+    console.warn(`[analysis-cache] dropped ${dropped.length} entr${dropped.length === 1 ? 'y' : 'ies'} with no usable recommendation: ${dropped.join(', ')}`)
+  }
+  return clean
+}
+
 export function edgeToOutcome(edge) {
   if (edge === 'home') return 'home_win'
   if (edge === 'away') return 'away_win'
