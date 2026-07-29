@@ -58,6 +58,40 @@ export function extractFirstJsonObject(raw) {
   throw new Error('Model output ended mid-object')
 }
 
+/* ---------- Groq's JSON-generation failure ----------
+ *
+ * With response_format json_object, Groq validates the completion server-side
+ * before returning it. When the model's output doesn't validate, the client
+ * never sees malformed JSON to parse — it gets a 400 whose body is:
+ *
+ *   { "error": { "code": "json_validate_failed",
+ *                "message": "Failed to generate JSON. Please adjust your prompt.
+ *                            See 'failed_generation' for more details.",
+ *                "failed_generation": "…" } }
+ *
+ * The message reads like a prompt bug, which is what makes it misleading: it is
+ * a sampling outcome, not a defect in the request. The identical body sent again
+ * generally validates, which is exactly why the reported case succeeded on a
+ * manual second attempt. So the retry belongs here rather than in front of the
+ * reader — asking someone to press a button again is asking them to do the
+ * retry by hand.
+ *
+ * Matched on the code first; the message text is only a fallback for the day
+ * Groq changes the code, and both halves of it are required so an unrelated
+ * error can't be mistaken for this one. */
+export function isJsonValidationFailure(err) {
+  if (!err) return false
+  if (err.code === 'json_validate_failed') return true
+  const msg = String(err.message || '')
+  return /failed to generate json/i.test(msg) && /failed_generation/i.test(msg)
+}
+
+/* What the reader is told when even the retry didn't validate. Deliberately not
+ * the Groq string: "adjust your prompt" is advice for whoever wrote the app, and
+ * there is no prompt in front of the reader to adjust. */
+export const ANALYSIS_INCOMPLETE_MESSAGE =
+  "The analysis didn't complete correctly. Try again."
+
 /* The main read — the one place careful, consistent reasoning matters most.
  *
  * This SHOULD be reasoning_effort: 'high'. It is 'medium' because 'high' cannot

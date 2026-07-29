@@ -15,7 +15,10 @@ import { footballFetch, isHalfTime, liveLabel, matchScore, matchPhase, h2hRows }
 import { getFixtureNews, getHeadlines, relativeTime } from './lib/news.js'
 import { getMatchGoals, formatMinute } from './lib/matchevents.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
-import { GROQ_MODEL, GROQ_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject } from './lib/groq.js'
+import {
+  GROQ_MODEL, GROQ_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject,
+  isJsonValidationFailure, ANALYSIS_INCOMPLETE_MESSAGE,
+} from './lib/groq.js'
 import {
   calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve, countsTowardRecord,
   edgeToOutcome, AGENT_PERF_EMPTY,
@@ -4780,10 +4783,20 @@ function BrandedLoading({ theme }) {
  * false to keep only the graceful fallback.
  *
  * It did its job once — it caught "E is not iterable" from the watchIds memo
- * and gave the stack that led to asList in useFixtures — and is off again: a
- * raw stack trace is not something to put in front of a reader. Turn it back
- * on when a live crash needs reading. */
-const CRASH_DIAGNOSTIC = false
+ * and gave the stack that led to asList in useFixtures.
+ *
+ * ON deliberately, and this is the one thing in this change that is not a fix.
+ * Crash-on-tap reports came in alongside the runaway ledger loop, and that loop
+ * is confirmed fixed (usePredictionLedger) — but the crash itself was never
+ * reproduced: a signed-in sweep of every control on all five tabs, with cached
+ * analyses, a live match, a finished match and an analysis whose fixture had
+ * aged out of the list, raised the boundary zero times. So there is no captured
+ * stack to work from, and no honest basis for calling it fixed.
+ *
+ * If the loop was the cause, no reader ever sees this panel, because there is
+ * no crash to show it. If it wasn't, the next crash carries its own stack off
+ * the live site. Flip to false once a deploy goes by with no fresh reports. */
+const CRASH_DIAGNOSTIC = true
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -5445,26 +5458,51 @@ function MatchIQ({ user, username, onUsernameChange }) {
        * cached for six hours, so a team appearing in several analyses this
        * afternoon costs one request. Failure returns empty and is never fatal. */
       const news = await getFixtureNews(fx)
-      const res = await fetch(
-        GROQ_ENDPOINT,
-        {
+      /* The request body is built once and posted by this closure, so the retry
+       * below re-sends exactly what failed rather than rebuilding a prompt that
+       * could differ. It also means the news fetch above is not repeated. */
+      const body = JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: buildPrompt(fx, { standings, news }) },
+        ],
+        response_format: { type: 'json_object' },
+        ...SYNTHESIS_PARAMS,
+      })
+      const postSynthesis = async () => {
+        const res = await fetch(GROQ_ENDPOINT, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`,
           },
-          body: JSON.stringify({
-            model: GROQ_MODEL,
-            messages: [
-              { role: 'system', content: SYSTEM_PROMPT },
-              { role: 'user', content: buildPrompt(fx, { standings, news }) },
-            ],
-            response_format: { type: 'json_object' },
-            ...SYNTHESIS_PARAMS,
-          }),
-        },
-      )
-      const data = await res.json()
+          body,
+        })
+        return res.json()
+      }
+
+      let data = await postSynthesis()
+      /* One automatic retry, and only for the one failure that earns it.
+       *
+       * json_validate_failed means the model's output didn't validate as JSON
+       * this time — a sampling outcome, not a bad request, and the same body
+       * generally validates on the next attempt. The reader was previously shown
+       * Groq's raw "Please adjust your prompt" string and had to press the button
+       * again themselves; this does that for them, inside the loading state that
+       * is already on screen, so a transient miss is invisible.
+       *
+       * Scoped deliberately: only this call, only this error code, only once. Any
+       * other Groq error still surfaces immediately without a second request, so
+       * a successful analysis costs exactly the calls it always did. */
+      if (isJsonValidationFailure(data.error)) {
+        console.warn('[groq] json_validate_failed on synthesis — retrying once')
+        data = await postSynthesis()
+        if (isJsonValidationFailure(data.error)) {
+          console.error('[groq] json_validate_failed twice — giving up')
+          throw new Error(ANALYSIS_INCOMPLETE_MESSAGE)
+        }
+      }
       if (data.error) throw new Error(data.error.message || 'Groq rejected the request')
       // A reasoning model spends most of its budget thinking; if the ceiling is
       // hit the JSON arrives half-written, so name that rather than failing on parse.

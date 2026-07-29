@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase.js'
 
 /* Read layer over the prediction ledger. Every query is scoped to the signed-in
@@ -97,5 +97,23 @@ export function usePredictionLedger(user) {
     }))
   }, [getResolvedPredictions])
 
-  return { getRecentPredictions, getResolvedPredictions, getAgentAccuracy, getCalibration }
+  /* Memoised, and that is load-bearing rather than tidiness.
+   *
+   * Every function above is already useCallback-stable, but the object holding
+   * them was rebuilt on each render, so it was a new reference every time. The
+   * Record screen has an effect keyed on this object which sets three pieces of
+   * state when its queries resolve — so a fresh reference meant: effect runs →
+   * setState → render → new object → effect runs again, with nothing in the
+   * cycle able to stop it. Measured on the Track Record tab, that was 8,584
+   * Supabase requests in twelve seconds (~715/s), against zero on every other
+   * tab. It never threw, which is why it went unnoticed: it simply saturated
+   * the connection pool, and every other request in the app — including
+   * football-data's — queued behind it.
+   *
+   * Returning a stable reference is what breaks the cycle at its source, and it
+   * fixes every present and future consumer rather than one call site. */
+  return useMemo(
+    () => ({ getRecentPredictions, getResolvedPredictions, getAgentAccuracy, getCalibration }),
+    [getRecentPredictions, getResolvedPredictions, getAgentAccuracy, getCalibration],
+  )
 }

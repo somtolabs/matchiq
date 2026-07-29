@@ -34,6 +34,20 @@ const RETRY_MAX_MS = 5 * 60 * 1000
 const retryDelayMs = (failures) =>
   Math.min(RETRY_BASE_MS * 2 ** Math.max(0, failures - 1), RETRY_MAX_MS)
 
+/* Hard safety limits on automatic retrying, independent of the backoff above.
+ *
+ * The backoff computes the delay from a failure count; these two bound what can
+ * happen if that count or that timestamp is ever wrong. RETRY_FLOOR_MS is the
+ * shortest gap an automatic retry may ever use — the timer is armed from
+ * `fixturesRetryAt - Date.now()`, and a timestamp already in the past yields a
+ * near-zero delay, which is a tight loop against a 10-request-a-minute budget.
+ * RETRY_MAX_ATTEMPTS stops unattended retrying altogether after a run of
+ * failures: at that point the provider is not coming back on its own within a
+ * useful window, and continuing to poll it only spends quota. The reader still
+ * has "Retry now", which is a deliberate act and is never capped. */
+const RETRY_FLOOR_MS = 15000
+const RETRY_MAX_ATTEMPTS = 5
+
 /* Fixture loading + team form enrichment + head-to-head on selection.
  *
  * loadTeamForms stays here because it mutates the fixture list directly via
@@ -281,7 +295,16 @@ export function useFixtures({ setStatus, setHealth }) {
    * rather than looping — and a success clears the flag, which stops it. */
   useEffect(() => {
     if (!fixturesUnavailable || !fixturesRetryAt) return
-    const ms = Math.max(0, fixturesRetryAt - Date.now()) + 250
+    // Past this many consecutive failures, stop polling on the reader's behalf.
+    if (failureCountRef.current >= RETRY_MAX_ATTEMPTS) {
+      console.warn(`[football-api] ${failureCountRef.current} consecutive fixture failures — automatic retry stopped, "Retry now" still available`)
+      return
+    }
+    /* Floored, not just computed. A retry timestamp that has already passed
+     * would otherwise arm a near-instant timer, and a near-instant timer that
+     * fails re-arms itself: that is the runaway shape, and the floor is what
+     * makes it impossible regardless of how the timestamp got there. */
+    const ms = Math.max(fixturesRetryAt - Date.now(), RETRY_FLOOR_MS)
     const t = setTimeout(() => loadRef.current(false, { force: true }), ms)
     return () => clearTimeout(t)
   }, [fixturesUnavailable, fixturesRetryAt])
