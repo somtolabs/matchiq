@@ -21,7 +21,7 @@ import {
 } from './lib/groq.js'
 import {
   calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve, countsTowardRecord,
-  edgeToOutcome, AGENT_PERF_EMPTY, hasVerdict, sanitizeAnalysisCache,
+  edgeToOutcome, AGENT_PERF_EMPTY, hasVerdict, sanitizeAnalysisCache, readScoreline,
 } from './lib/analysis.js'
 import {
   lookupOddsForFixture, sportKeysForFixtures, readOddsStore, writeOddsStore, nameScore,
@@ -1762,6 +1762,11 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
     : ''
   const reasoningFirstSentence = (r.reasoning || '').split(/(?<=[.!?])\s+/)[0] || ''
 
+  /* null for every analysis written before this field existed, which is most of
+   * them on the day this ships — the section simply doesn't render. */
+  const scoreline = readScoreline(data)
+  const thinScoreData = scoreline?.dataQuality === 'low'
+
   const analysedAt = data._ts
     ? new Date(data._ts).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
     : null
@@ -1811,6 +1816,98 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
               ...type.body, fontSize: 17.5, lineHeight: 1.7, color: T.ink,
               margin: 0, fontWeight: 420,
             }}>{r.reasoning}</p>
+          </Card>
+        </Reveal>
+      )}
+
+      {/* HOW IT LIKELY FINISHES — three scores, not one.
+          A single "2-1" reads as a forecast of the actual result, and it isn't
+          one: the modal exact score in football is usually only about one game
+          in eight. Three scores each carrying its own probability says the same
+          thing without the false precision, and matches how the rest of this
+          screen already talks about confidence. The probability is never hidden
+          behind the number for that reason. */}
+      {scoreline && (
+        <Reveal>
+          <Card style={{ padding: 30 }}>
+            <Eyebrow>How it likely finishes</Eyebrow>
+
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginTop: 16, flexWrap: 'wrap' }}>
+              <span style={{
+                ...type.num, fontSize: thinScoreData ? 30 : 40, fontWeight: 600,
+                color: thinScoreData ? T.sub : T.ink, letterSpacing: '-0.02em',
+              }}>{scoreline.most.home}–{scoreline.most.away}</span>
+              {scoreline.most.probability != null && (
+                <span style={{ ...type.small, fontSize: 14.5, color: T.sub }}>
+                  most likely, at about {Math.round(scoreline.most.probability * 100)}%
+                </span>
+              )}
+            </div>
+            <div style={{ ...type.small, fontSize: 13, color: T.faint, marginTop: 6 }}>
+              {fx.homeTeam} — {fx.awayTeam}
+            </div>
+
+            {scoreline.alternatives.length > 0 && (
+              <div style={{ marginTop: 20, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                {scoreline.alternatives.map((s, i) => (
+                  <span key={i} style={{
+                    ...type.small, fontSize: 13.5, color: T.sub, background: T.card2,
+                    borderRadius: 999, padding: '6px 14px', whiteSpace: 'nowrap',
+                  }}>
+                    <strong style={{ ...type.num, color: T.ink, fontWeight: 560 }}>{s.home}–{s.away}</strong>
+                    {s.probability != null && <> · {Math.round(s.probability * 100)}%</>}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {scoreline.expected && (
+              <div style={{ ...type.small, fontSize: 13.5, color: T.sub, marginTop: 18 }}>
+                Expected goals from the rates we read:{' '}
+                <strong style={{ color: T.ink, fontWeight: 560 }}>
+                  {scoreline.expected.home.toFixed(1)}–{scoreline.expected.away.toFixed(1)}
+                </strong>
+              </div>
+            )}
+
+            {scoreline.reasoning && (
+              <p style={{ ...type.body, fontSize: 15, lineHeight: 1.65, color: T.sub, margin: '14px 0 0' }}>
+                {scoreline.reasoning}
+              </p>
+            )}
+
+            {/* Exact scores are a long shot even when everything else is solid.
+                Said once, plainly, rather than implied by the percentages. */}
+            <div style={{ ...type.small, fontSize: 13, color: T.faint, marginTop: 16 }}>
+              Exact scores are hard: even our most likely one is far more likely to be
+              wrong than right. This is the shape of the match, not a forecast of the result.
+            </div>
+
+            {thinScoreData && (
+              <div style={{
+                marginTop: 16, padding: '14px 16px', background: T.card2, borderRadius: 12,
+                ...type.small, fontSize: 13.5, color: T.ink,
+              }}>
+                <strong style={{ fontWeight: 600 }}>Thin data: </strong>
+                there wasn't much goal history behind this one, so treat the score as a
+                rough shape only — it rests on less than our usual read does.
+              </div>
+            )}
+
+            {/* The model is told the modal score must match the pick. When it
+                doesn't, that disagreement is real information and is shown,
+                the same way a disagreement between the three angles is. */}
+            {!scoreline.agreesWithPick && (
+              <div style={{
+                marginTop: 16, padding: '14px 16px', background: T.badBg, borderRadius: 12,
+                ...type.small, fontSize: 13.5, color: T.ink,
+              }}>
+                <strong style={{ fontWeight: 600 }}>These don't line up: </strong>
+                this score points to {scoreline.impliedByScore === 'draw' ? 'a draw' : pickShort(scoreline.impliedByScore, fx)},
+                while our pick is {pickShort(r.pick, fx)}. Our goal read and our result read
+                disagree here — worth weighing both rather than either alone.
+              </div>
+            )}
           </Card>
         </Reveal>
       )}

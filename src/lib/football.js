@@ -120,11 +120,37 @@ export function nextDayKey(key, days = 1) {
  * dateFrom/dateTo on UTC, so asking for the viewer's local day means asking for
  * the UTC day(s) it overlaps — otherwise a viewer far enough east or west is
  * served a card for a day that isn't theirs. */
+/* football-data rejects a date filter spanning more than ten days:
+ *   HTTP 400 {"message":"Specified period must not exceed 10 days.","errorCode":400}
+ * Verified against the live API. */
+export const FOOTBALL_MAX_RANGE_DAYS = 10
+
 export function localDayUtcRange(days = 0) {
   const key = todayKey()
   const start = new Date(`${key}T00:00:00`)          // parsed as local midnight
   const end = new Date(start.getTime() + (days + 1) * 86400000 - 1)
-  return { from: start.toISOString().slice(0, 10), to: end.toISOString().slice(0, 10) }
+  const from = start.toISOString().slice(0, 10)
+  let to = end.toISOString().slice(0, 10)
+
+  /* Clamped here rather than at the call site, because this is where the two
+   * dates are finally known. The ten-day fallback asked for `days = 10`, which
+   * after the local-midnight-to-UTC conversion came out as an ELEVEN-day period
+   * — one day over — and the call 400'd every single time. That made the empty-
+   * day fallback dead on arrival: on a day with no fixtures the list call
+   * returned 200 with nothing, the window call 400'd, and the reader was told
+   * "we couldn't load today's matches" with a backoff retry behind it, on a day
+   * when the honest answer was the next week's fixtures. Off-season is exactly
+   * when that fallback is most needed and exactly when it never fired.
+   *
+   * Clamping the span cannot shorten a request that was already legal, and no
+   * caller can produce an illegal one again. */
+  const dayMs = 86400000
+  const span = (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / dayMs
+  if (span > FOOTBALL_MAX_RANGE_DAYS) {
+    to = new Date(Date.parse(`${from}T00:00:00Z`) + FOOTBALL_MAX_RANGE_DAYS * dayMs)
+      .toISOString().slice(0, 10)
+  }
+  return { from, to }
 }
 
 /* One head-to-head meeting, reduced to what can honestly be shown.

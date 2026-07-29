@@ -69,8 +69,22 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
    * evidently not reserving the full max_tokens the way this comment assumed.
    * The stagger stays because it is cheap insurance, not because that sum is
    * exact. */
+  /* 70s and 100s, not 25s and 50s.
+   *
+   * Both old offsets sat inside the same rolling minute as the main read. That
+   * was already over the 8,000/min ceiling on paper and only worked because
+   * Groq does not reserve the full max_tokens. Raising the synthesis call's
+   * max_tokens to 4,600 for the scoreline took its reservation to roughly
+   * 7,500, which leaves under 600 in that minute — not enough for a 2,474-token
+   * market call, so both would now reliably 429 and the goals panel would go
+   * quietly missing.
+   *
+   * Pushing the first past 60s puts both calls in the next window, where they
+   * share 8,000 between them and fit comfortably. These are background
+   * enrichment behind an already-rendered verdict, so the extra wait costs the
+   * reader nothing; a silently empty panel would have cost them the feature. */
   const results = await Promise.allSettled(markets.map(async (market, i) => {
-    await new Promise(r => setTimeout(r, (i + 1) * 25000))
+    await new Promise(r => setTimeout(r, 70000 + i * 30000))
     const res = await fetch(GROQ_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -93,6 +107,76 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
     return { key: market.key, label: market.label, result: parsed }
   }))
   return results.filter(r => r.status === 'fulfilled').map(r => r.value)
+}
+
+/* ---------- the predicted scoreline ----------
+ *
+ * Read out of the model's `scoreline` block rather than recomputed, because the
+ * derivation belongs where the data is: the synthesis prompt already carries
+ * per-match goals for and against with the home/away split, season per-game
+ * rates from the standings, and goals per meeting from the head-to-head. A
+ * second calculation here would be a different, worse model of the same
+ * numbers, and it could disagree with the verdict written beside it.
+ *
+ * What this function does instead is refuse to render anything that isn't a
+ * real, coherent prediction:
+ *   - goals must be non-negative whole numbers, probabilities real fractions;
+ *   - the whole block is dropped if the modal score is missing, because the
+ *     alternatives alone are not a prediction;
+ *   - `agreesWithPick` is computed, not assumed. The prompt requires the modal
+ *     score to match the pick, but a prompt rule is not a guarantee, and a
+ *     scoreline quietly contradicting the verdict above it is exactly the class
+ *     of contradiction this app has had to fix twice already. Surfaced, not
+ *     suppressed.
+ *
+ * Returns null when there is nothing honest to show — every analysis cached
+ * before this field existed lands here, which is the common case at first. */
+const isCount = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= 20 && Number.isInteger(n)
+const asProb = (p) => (typeof p === 'number' && Number.isFinite(p) && p > 0 && p <= 1 ? p : null)
+
+function cleanScore(s) {
+  if (!s || typeof s !== 'object') return null
+  if (!isCount(s.home) || !isCount(s.away)) return null
+  return { home: s.home, away: s.away, probability: asProb(s.probability) }
+}
+
+export function readScoreline(analysis) {
+  const sl = analysis?.scoreline
+  if (!sl || typeof sl !== 'object') return null
+  const most = cleanScore(sl.most_likely)
+  if (!most) return null
+
+  const alternatives = (Array.isArray(sl.alternatives) ? sl.alternatives : [])
+    .map(cleanScore)
+    .filter(Boolean)
+    // A repeat of the headline score is not an alternative.
+    .filter(s => !(s.home === most.home && s.away === most.away))
+    .slice(0, 2)
+
+  const xg = sl.expected_goals
+  const expected = (xg && typeof xg.home === 'number' && typeof xg.away === 'number'
+    && Number.isFinite(xg.home) && Number.isFinite(xg.away)
+    && xg.home >= 0 && xg.away >= 0 && xg.home <= 10 && xg.away <= 10)
+    ? { home: xg.home, away: xg.away }
+    : null
+
+  const pick = analysis?.recommendation?.pick
+  const impliedByScore = most.home > most.away ? 'home_win'
+    : most.away > most.home ? 'away_win' : 'draw'
+  // Only meaningful when there is a pick to compare against.
+  const agreesWithPick = pick ? impliedByScore === pick : true
+
+  return {
+    most,
+    alternatives,
+    expected,
+    agreesWithPick,
+    impliedByScore,
+    reasoning: typeof sl.reasoning === 'string' && sl.reasoning.trim() ? sl.reasoning.trim() : null,
+    // Carried through so the UI can caveat a thin-data prediction without
+    // reaching back into the recommendation for it.
+    dataQuality: analysis?.recommendation?.data_quality || null,
+  }
 }
 
 /* ---------- is this stored analysis renderable? ----------

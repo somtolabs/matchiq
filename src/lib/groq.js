@@ -110,10 +110,29 @@ export const ANALYSIS_INCOMPLETE_MESSAGE =
  * max_tokens above ~6,500 and set this back to 'high' — nothing else needs to
  * change. The reasoning-first behaviour this sprint is about comes from the
  * model being a reasoning model at all, which 'medium' fully delivers. */
+/* max_tokens raised from 3,600 when the scoreline block was added to the
+ * schema. That was not a precaution — at 3,600 the first live call after the
+ * change came back finish_reason: "length" and the reader was told the model
+ * ran out of room. The extra derivation (expected goals, then three scores with
+ * probabilities) costs both reasoning and answer tokens, and 3,600 no longer
+ * covered them.
+ *
+ * 4,200 is sized from a measured live call rather than guessed. That call used
+ * 3,179 completion tokens (1,786 of them reasoning) and finished cleanly, so
+ * 4,200 leaves about a thousand spare — comfortably more than the margin 3,600
+ * failed to provide.
+ *
+ * The ceiling is set by the account's 8,000 tokens-per-minute limit, which
+ * counts prompt + max_tokens up front and is the binding constraint, not the
+ * model's own 65,536. That same call's prompt was 3,200 tokens, and a fixture
+ * carrying news headlines adds roughly 200 more: 3,400 + 4,200 = 7,600, inside
+ * the window. 4,600 would have put the news case at 8,000 exactly and had it
+ * rejected outright — the reservation has to fit the WORST prompt, not the one
+ * that happened to be measured. */
 export const SYNTHESIS_PARAMS = {
   reasoning_effort: 'medium',
   reasoning_format: 'hidden',
-  max_tokens: 3600,
+  max_tokens: 4200,
   temperature: 0.3,
   top_p: 0.9,
 }

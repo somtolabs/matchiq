@@ -35,7 +35,12 @@ Fill the schema fields in the order given. Do not work backwards from a conclusi
 2. case_for — the specific factors favouring each side. The less-favoured team's case must be genuine and drawn from these numbers, not a courtesy sentence. If you truly cannot build one, name the datum that would have to change.
 3. form_analysis, tactical_analysis, market_analysis — the three angles.
 4. recommendation — only now. Its reasoning must WEIGH the case_for items against each other and say which won and why. The pick and confidence must follow from that written case.
+5. scoreline — last, and derived from the pick, never the other way round.
 Be evidence-led: build the case first, then let the pick follow. If your written reasoning does not support the pick you were leaning toward, change the pick, not the reasoning.
+
+SCORELINE — DERIVED, NOT GUESSED
+expected_goals first: blend each side's scored/conceded per match from the form block with their season per-game rates and the H2H goals per meeting, adjusted for the home/away split. One decimal each. Then the three likeliest exact scores consistent with those two numbers.
+Hard rules: the most likely score must agree with your pick (home_win = more home goals, draw = level); if the goals say otherwise, change the pick, not the score. Exact scores are low-probability — the modal one is typically 0.09-0.13, never above 0.16, and your three should not sum past 0.40. Thin goal data means low probabilities and say so in scoreline.reasoning.
 
 HONEST UNCERTAINTY IS REQUIRED
 When the data does not clearly favour one outcome, say so and reflect it in a lower confidence and, where appropriate, a draw or neutral call. A genuinely uncertain match must not be forced into a confident pick — express the uncertainty a careful human analyst would. Confidence bands: 0.35–0.45 genuinely murky, 0.45–0.60 modest lean, 0.60–0.75 well supported, above 0.75 only when several independent pieces of data agree. "neutral" and "none" are correct answers when the data says so.
@@ -118,6 +123,18 @@ JSON SCHEMA (every field required, produced in this order):
     ],
     "bet_units": 0.5,
     "data_quality": "high | medium | low"
+  },
+  "scoreline": {
+    "expected_goals": {
+      "home": 0.0,
+      "away": 0.0
+    },
+    "most_likely": { "home": 0, "away": 0, "probability": 0.00 },
+    "alternatives": [
+      { "home": 0, "away": 0, "probability": 0.00 },
+      { "home": 0, "away": 0, "probability": 0.00 }
+    ],
+    "reasoning": "1-2 sentences naming the actual goal numbers this came from — the per-match and season scoring and conceding rates, the head-to-head goals per meeting — and how the venue split moved them. If the goal data was thin, say that here instead."
   }
 }`
 
@@ -297,6 +314,7 @@ There is no injury list, no suspension list and no confirmed lineup here. None i
 6. If odds available: calculate normalized implied probabilities (strip the overround) and identify market inefficiencies.
 7. Only then write the recommendation. Its reasoning must weigh the cases above against each other, and the confidence must match how close that weighing actually was.
 8. Set data_quality based on: high (goal-level form + standings + H2H + odds), medium (two or three of those), low (letters-only form, or no form).
+9. Finally the scoreline, per the rules above: expected goals per side, then the three likeliest exact scores, the first agreeing with your pick.
 
 Respond with the JSON schema only.`
 }
