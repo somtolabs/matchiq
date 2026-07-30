@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import {
   Sun, Moon, ChevronLeft, ChevronRight, X as XIcon, Check, Heart,
-  Mail, ArrowUpRight, Plus, Minus, Eye, EyeOff, Pencil, Lock,
+  Mail, ArrowUpRight, Plus, Minus, Eye, EyeOff, Pencil, Lock, Calendar,
 } from 'lucide-react'
 import '@fontsource-variable/inter'
 
@@ -314,6 +314,12 @@ function GlobalStyles() {
       .iq-livedot { animation: iq-livedot 2s ease-in-out infinite; }
 
       @keyframes iq-think { to { transform: rotate(360deg); } }
+
+      /* One-shot accent sheen for the profile identity header — a single, subtle
+         sweep on mount, then still. Respects reduced-motion. */
+      @keyframes iq-sheen { 0% { transform: translateX(-130%); } 100% { transform: translateX(130%); } }
+      .iq-sheen { animation: iq-sheen 1.5s ${T.ease} 1 both; }
+      @media (prefers-reduced-motion: reduce) { .iq-sheen { animation: none; opacity: 0; } }
 
       .iq-row { transition: background-color 180ms ${T.ease}; }
       .iq-row:hover { background: ${T.card2}; }
@@ -3643,6 +3649,13 @@ function RecordScreen({
   const ledgerLoading = verifiedRecord == null || calibration == null
   const enoughSettled = !ledgerLoading && settled >= MIN_SETTLED
 
+  /* The headline accuracy reads the ledger, the same source the Profile page now
+   * uses — the two screens can never diverge. The local-cache `winRate` above is
+   * kept only for the "last N" dots below, which are a per-match visual, not the
+   * headline number. Held to the same three-settled floor before a % is shown. */
+  const ledgerRate = verifiedRecord?.winRate ?? null
+  const headlineRate = verifiedRecord && verifiedRecord.count >= 3 ? ledgerRate : null
+
   const agents = [
     { key: 'form', label: 'Form', sub: 'recent results and momentum' },
     { key: 'tactical', label: 'History & matchup', sub: 'head-to-head patterns' },
@@ -3661,42 +3674,25 @@ function RecordScreen({
         </div>
       </Reveal>
 
-      {/* Verified record — pulled directly from the Supabase ledger, shown
-          alongside the analysisCache numbers as a redundant correctness check */}
-      {verifiedRecord && verifiedRecord.count > 0 && (
-        <Reveal delay={0.04}>
-          <Card className="iq-elevated" style={{ padding: 24, marginTop: 26 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-              <div>
-                <Eyebrow style={{ color: T.accent }}>Verified record</Eyebrow>
-                <div style={{ ...type.small, fontSize: 13, marginTop: 6 }}>
-                  Straight from your permanent ledger — {verifiedRecord.correct} right of {verifiedRecord.count} settled.
-                </div>
-              </div>
-              <div style={{ ...type.display, fontSize: 34, color: T.ink, fontVariantNumeric: 'tabular-nums' }}>
-                {verifiedRecord.winRate == null ? '—' : `${verifiedRecord.winRate}%`}
-              </div>
-            </div>
-          </Card>
-        </Reveal>
-      )}
-
-      {/* Headline */}
+      {/* Headline — accuracy from the permanent ledger (the single source of
+          truth now shared with the Profile page). */}
       <Reveal delay={0.06}>
-        <Card style={{ padding: 34, marginTop: 26 }}>
+        <Card className="iq-elevated" style={{ padding: 34, marginTop: 26 }}>
           <div style={{ display: 'flex', gap: 40, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div>
               <Eyebrow>Verdicts that landed</Eyebrow>
               <div style={{ ...type.display, fontSize: 54, lineHeight: 1, marginTop: 10,
-                color: winRate == null ? T.faint : winRate >= 55 ? T.good : winRate >= 45 ? T.ink : T.bad }}>
-                {winRate == null ? '—' : `${winRate}%`}
+                color: headlineRate == null ? T.faint : headlineRate >= 55 ? T.good : headlineRate >= 45 ? T.ink : T.bad }}>
+                {headlineRate == null ? '—' : `${headlineRate}%`}
               </div>
               <div style={{ ...type.small, marginTop: 8 }}>
-                {resolved.length === 0
+                {ledgerLoading
+                  ? 'Reading your ledger…'
+                  : !verifiedRecord || verifiedRecord.count === 0
                   ? 'No settled matches yet.'
-                  : winRate == null
-                  ? `Only ${resolved.length} settled so far — too few to judge honestly.`
-                  : `${correct} right out of ${resolved.length} settled${resolved.length < 10 ? ' — still a small sample, take it lightly' : ''}.`}
+                  : headlineRate == null
+                  ? `Only ${verifiedRecord.count} settled so far — too few to judge honestly.`
+                  : `Straight from your permanent ledger — ${verifiedRecord.correct} right out of ${verifiedRecord.count} settled${verifiedRecord.count < 10 ? ' — still a small sample, take it lightly' : ''}.`}
               </div>
             </div>
             <div>
@@ -3818,6 +3814,14 @@ function RecordScreen({
                 const r = a.recommendation || {}
                 const conf = Math.round((r.confidence || 0) * 100)
                 const isOpen = openResolve === id
+                /* Auto-resolution grades every FINISHED match on its own, so an
+                 * unresolved row is normally just waiting for kick-off or the
+                 * final whistle — it needs no button. The one case it can never
+                 * grade is a match that will never post a score: postponed,
+                 * called off, abandoned. Only there is a manual mark offered, and
+                 * it is styled as the exception it is, never the default. */
+                const abandoned = !a.resolved && fx
+                  && ['POSTPONED', 'CANCELLED', 'SUSPENDED', 'AWARDED'].includes(fx.status)
                 return (
                   <div key={id} style={{ borderBottom: idx < entries.length - 1 || isOpen ? `1px solid ${T.line}` : 'none' }}>
                     <div className="iq-row"
@@ -3843,17 +3847,30 @@ function RecordScreen({
                           background: a.correct ? T.goodBg : T.badBg,
                           borderRadius: 999, padding: '4px 12px',
                         }}>{a.correct ? 'Right' : 'Wrong'}</span>
-                      ) : (
-                        <button onClick={(e) => { e.stopPropagation(); setOpenResolve(isOpen ? null : id) }} style={{
-                          background: 'transparent', border: `1px solid ${T.lineHi}`, borderRadius: 999,
+                      ) : abandoned ? (
+                        /* The exception: a match that will never settle itself.
+                         * Dashed, muted and explicitly labelled so it never reads
+                         * as the normal way a verdict gets graded. */
+                        <button onClick={(e) => { e.stopPropagation(); setOpenResolve(isOpen ? null : id) }} title="This match was called off — auto-grading can't score it" style={{
+                          background: 'transparent', border: `1px dashed ${T.lineHi}`, borderRadius: 999,
                           padding: '4px 13px', cursor: 'pointer', flexShrink: 0,
-                          fontFamily: T.sans, fontSize: 12, fontWeight: 560, color: T.sub,
-                        }}>Settle</button>
+                          fontFamily: T.sans, fontSize: 11.5, fontWeight: 560, color: T.faint,
+                        }}>Mark manually</button>
+                      ) : (
+                        /* The normal case: auto-resolution will grade this the
+                         * moment the match finishes — nothing for the user to do. */
+                        <span style={{
+                          fontSize: 12, fontWeight: 560, fontFamily: T.sans, flexShrink: 0,
+                          color: T.faint, borderRadius: 999, padding: '4px 12px',
+                          border: `1px solid ${T.line}`,
+                        }}>Awaiting result</span>
                       )}
                     </div>
-                    {isOpen && (
+                    {isOpen && abandoned && (
                       <div style={{ padding: '10px 22px 18px', background: T.card2, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                        <span style={{ ...type.small }}>Was the pick right?</span>
+                        <span style={{ ...type.small }}>
+                          This match was called off, so it can't be graded automatically. Did the pick come in?
+                        </span>
                         <Button kind="soft" style={{ padding: '5px 16px', fontSize: 12, background: T.card }}
                           onClick={() => { onResolve(id, true); setOpenResolve(null) }}>Yes</Button>
                         <Button kind="ghost" style={{ padding: '5px 16px', fontSize: 12 }}
@@ -4804,7 +4821,7 @@ function StatRing({ pct, size = 112, stroke = 9, dim = false }) {
 function ProfileScreen({
   user, analysisCache, fixtures, themeMode, onThemeMode,
   emailNotifications, onEmailNotifications, onSignOut, isMobile,
-  avatarChoice, onAvatarChoice, username, onUsernameChange,
+  avatarChoice, onAvatarChoice, username, onUsernameChange, verifiedRecord,
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -4834,7 +4851,18 @@ function ProfileScreen({
     .filter(([id, a]) => countsTowardRecord(a, fixtureById.get(String(id))))
     .map(([, a]) => a)
   const correct = resolved.filter(a => a.correct).length
-  const accuracy = resolved.length ? Math.round((correct / resolved.length) * 100) : 0
+
+  /* Accuracy is read from the permanent ledger, the same source the Track Record
+   * screen's verified figure comes from, so the two screens can never show
+   * different percentages. The local-cache count is the fallback only while the
+   * ledger read is still in flight (verifiedRecord == null). The form timeline
+   * and best-streak below stay on the local cache — they are per-match visuals,
+   * not the headline number Task 2 unifies. */
+  const settledCount = verifiedRecord?.count ?? resolved.length
+  const settledCorrect = verifiedRecord?.correct ?? correct
+  const accuracy = verifiedRecord?.winRate != null
+    ? verifiedRecord.winRate
+    : (resolved.length ? Math.round((correct / resolved.length) * 100) : 0)
   const confs = entries.map(a => a.recommendation?.confidence).filter(c => typeof c === 'number')
   const avgConf = confs.length ? Math.round((confs.reduce((s, c) => s + c, 0) / confs.length) * 100) : null
   let bestStreak = 0
@@ -4857,8 +4885,8 @@ function ProfileScreen({
 
   // Signature line: a stat-as-identity. Favor accuracy once there's a real
   // sample, otherwise the join-based line — always from real data.
-  const signature = resolved.length >= 5
-    ? `${accuracy}% accuracy across ${resolved.length} resolved ${resolved.length === 1 ? 'match' : 'matches'}`
+  const signature = settledCount >= 5
+    ? `${accuracy}% accuracy across ${settledCount} resolved ${settledCount === 1 ? 'match' : 'matches'}`
     : memberSince ? `Reading matches since ${memberSince}` : 'Just getting started'
 
   const deleteHref = `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent('Delete my account')}&body=${encodeURIComponent(`Please delete my MatchIQ account associated with ${user?.email || ''}`)}`
@@ -4888,6 +4916,13 @@ function ProfileScreen({
           marginBottom: 8, borderRadius: 24, position: 'relative', overflow: 'hidden',
           background: T.card, border: `1px solid ${T.line}`,
         }}>
+          {/* One-shot accent sheen sweeping across the header on load. Purely
+              decorative and non-interactive; carries no data of its own. */}
+          <div aria-hidden className="iq-sheen" style={{
+            position: 'absolute', top: 0, left: 0, bottom: 0, width: '55%',
+            background: `linear-gradient(100deg, transparent, ${T.accentBg}, transparent)`,
+            pointerEvents: 'none',
+          }} />
           <div style={{ display: 'inline-block', position: 'relative' }}>
             <button onClick={() => setPickerOpen(o => !o)} aria-label="Edit avatar"
               className="iq-halo" style={{
@@ -4904,13 +4939,27 @@ function ProfileScreen({
               <Pencil size={14} strokeWidth={2} />
             </button>
           </div>
-          <div style={{ ...type.display, fontSize: isMobile ? 28 : 34, color: T.ink, marginTop: 22 }}>{displayName}</div>
-          {username && (
-            <div style={{ fontFamily: T.mono, fontSize: 15, fontWeight: 600, color: T.accent, marginTop: 8 }}>
-              @{username}
-            </div>
-          )}
-          <div style={{ ...type.small, fontSize: 13, color: T.sub, marginTop: 10 }}>{signature}</div>
+          {/* Name, handle and signature grouped as one identity block, sitting
+              above the sheen. */}
+          <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', marginTop: 22 }}>
+            <div style={{ ...type.display, fontSize: isMobile ? 28 : 34, color: T.ink }}>{displayName}</div>
+            {username && (
+              <div style={{ fontFamily: T.mono, fontSize: 15, fontWeight: 600, color: T.accent, marginTop: 6 }}>
+                @{username}
+              </div>
+            )}
+            <div style={{ ...type.small, fontSize: 13, color: T.sub, marginTop: 12, maxWidth: 360 }}>{signature}</div>
+            {memberSince && (
+              <div style={{
+                display: 'inline-flex', alignItems: 'center', gap: 7, marginTop: 16,
+                padding: '5px 13px', borderRadius: 999, background: T.card2,
+                border: `1px solid ${T.line}`, ...type.small, fontSize: 12, color: T.faint,
+              }}>
+                <Calendar size={12.5} strokeWidth={1.9} style={{ color: T.faint }} />
+                Member since {memberSince}
+              </div>
+            )}
+          </div>
         </div>
       </Materialize>
 
@@ -5019,16 +5068,16 @@ function ProfileScreen({
           gap: isMobile ? 22 : 30, flexWrap: 'wrap',
         }}>
           <div style={{ position: 'relative', width: 112, height: 112, flexShrink: 0 }}>
-            <StatRing pct={resolved.length < 5 ? (resolved.length / 5) * 100 : accuracy}
-              dim={resolved.length < 5} />
+            <StatRing pct={settledCount < 5 ? (settledCount / 5) * 100 : accuracy}
+              dim={settledCount < 5} />
             <div style={{
               position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
               alignItems: 'center', justifyContent: 'center',
             }}>
-              {resolved.length < 5 ? (
+              {settledCount < 5 ? (
                 <>
                   <span style={{ ...type.display, fontSize: 26, color: T.ink, fontVariantNumeric: 'tabular-nums' }}>
-                    {resolved.length}<span style={{ color: T.faint, fontSize: 17 }}>/5</span>
+                    {settledCount}<span style={{ color: T.faint, fontSize: 17 }}>/5</span>
                   </span>
                   <span style={{ ...type.small, fontSize: 10.5, color: T.faint, textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 2 }}>resolved</span>
                 </>
@@ -5044,12 +5093,12 @@ function ProfileScreen({
           </div>
           <div style={{ flex: 1, minWidth: 180 }}>
             <div style={{ ...type.title, fontSize: 20, color: T.ink }}>
-              {resolved.length < 5 ? 'Building your record' : `${correct} of ${resolved.length} calls correct`}
+              {settledCount < 5 ? 'Building your record' : `${settledCorrect} of ${settledCount} calls correct`}
             </div>
             <p style={{ ...type.small, fontSize: 14, color: T.sub, marginTop: 8, marginBottom: 0, lineHeight: 1.6 }}>
-              {resolved.length < 5
-                ? `Once five tracked matches have resolved, your accuracy shows here. ${resolved.length} counted so far.`
-                : `Across every tracked match that has finished and settled. Only genuine forward calls count — never a match read after it was played.`}
+              {settledCount < 5
+                ? `Once five tracked matches have resolved, your accuracy shows here. ${settledCount} counted so far.`
+                : `Straight from your permanent ledger — every tracked match that has finished and settled. Only genuine forward calls count, never a match read after it was played.`}
             </p>
           </div>
         </Card>
@@ -5935,8 +5984,11 @@ function MatchIQ({ user, username, onUsernameChange }) {
    * ledger read layer was built but had no call site until now. */
   const [agentAccuracy, setAgentAccuracy] = useState(null)
   const [calibration, setCalibration] = useState(null)
+  /* Loaded for the Profile tab as well as Record: both screens show an accuracy
+   * figure and it must be the SAME figure, read from the permanent ledger rather
+   * than each deriving its own off the local cache. */
   useEffect(() => {
-    if (activeTab !== 'record') return
+    if (activeTab !== 'record' && activeTab !== 'profile') return
     let cancelled = false
     ledger.getResolvedPredictions().then(rows => {
       if (cancelled) return
@@ -6532,6 +6584,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
     )
     if (activeTab === 'profile') return (
       <ProfileScreen user={user} analysisCache={analysisCache} fixtures={fixtures} isMobile={isMobile}
+        verifiedRecord={verifiedRecord}
         themeMode={themeMode} onThemeMode={setThemeMode}
         emailNotifications={emailNotifications} onEmailNotifications={setEmailNotifications}
         avatarChoice={avatarChoice} onAvatarChoice={setAvatarChoice}
