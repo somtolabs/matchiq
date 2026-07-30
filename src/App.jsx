@@ -66,6 +66,8 @@ const T = {
   accentBg:  'var(--iq-accentBg)',
   good:      'var(--iq-good)',
   goodBg:    'var(--iq-goodBg)',
+  warn:      'var(--iq-warn)',
+  warnBg:    'var(--iq-warnBg)',
   bad:       'var(--iq-bad)',
   badBg:     'var(--iq-badBg)',
   live:      'var(--iq-live)',
@@ -95,6 +97,11 @@ const LIGHT = {
   accentBg:  'rgba(0,113,227,0.08)',
   good:      '#1D7F3E',
   goodBg:    'rgba(29,127,62,0.08)',
+  // Traffic-light amber for the medium-confidence band. Darkened for legibility
+  // as a graphical indicator on the near-white surface, kept clearly distinct
+  // from the red bad token (#C93400).
+  warn:      '#B07000',
+  warnBg:    'rgba(176,112,0,0.10)',
   bad:       '#C93400',
   badBg:     'rgba(201,52,0,0.07)',
   live:      '#E8481C',
@@ -122,6 +129,10 @@ const DARK = {
   accentBg:  'rgba(41,151,255,0.13)',
   good:      '#3DD968',
   goodBg:    'rgba(61,217,104,0.11)',
+  // Traffic-light amber for the medium band — a bright gold that stays legible
+  // on true-black and reads as distinct from the salmon bad token (#FF7A66).
+  warn:      '#F5B23D',
+  warnBg:    'rgba(245,178,61,0.13)',
   bad:       '#FF7A66',
   badBg:     'rgba(255,122,102,0.10)',
   live:      '#FF7A66',
@@ -769,8 +780,75 @@ function AnimatedScore({ value, style }) {
   )
 }
 
-/* Friendly language helpers — plain words first, numbers second */
-function confidencePhrase(conf) {
+/* ---------- honest-framing gate ----------
+ *
+ * The floor a picked outcome's OWN probability (model_probability) must clear
+ * before the app is allowed to frame it as a safe / sharp / strong pick. Below
+ * it the outcome is, by the model's own read, more likely NOT to happen than to
+ * happen — so any confident wording dresses up a coin-flip or worse.
+ *
+ * 0.50, not 0.55: 0.50 is the exact more-likely-than-not line, the honest
+ * boundary for whether a single outcome can be called the favourite at all.
+ * Raising it to 0.55 would relabel genuine odds-on favourites (50–55%) as
+ * toss-ups — a dishonesty in the opposite direction — so 0.50 is the principled
+ * floor. Confidence (how sure the model is relative to the alternatives) is a
+ * separate number and is not a substitute: a model can be "confident" a draw is
+ * likeliest at 38%, and calling that a safe bet is exactly the gap this closes. */
+const SAFE_PICK_FLOOR = 0.50
+function isSafePick(rec) {
+  const p = rec?.model_probability
+  return typeof p === 'number' && p >= SAFE_PICK_FLOOR
+}
+
+/* ---------- traffic-light confidence bands ----------
+ *
+ * A deliberate, functional exception to the app's low-colour discipline: this
+ * is information, not decoration, so it is kept to a small dot or a thin bar
+ * fill — never a block of colour. Thresholds on the confidence percentage:
+ *   < 55%   low     → red   (T.bad)
+ *   55–69%  medium  → amber (T.warn)
+ *   >= 70%  high    → green (T.good, the app's existing positive accent)  */
+const CONF_LOW = 55   // below this: low confidence (red)
+const CONF_HIGH = 70  // at/above this: high confidence (green)
+function confidenceColor(pct) {
+  if (pct >= CONF_HIGH) return T.good
+  if (pct >= CONF_LOW) return T.warn
+  return T.bad
+}
+function confidenceBand(pct) {
+  return pct >= CONF_HIGH ? 'high' : pct >= CONF_LOW ? 'medium' : 'low'
+}
+/* The indicator itself. A plain filled dot, sized small, with an accessible
+ * label so the colour is never the only carrier of the signal. */
+function ConfidenceDot({ pct, size = 8, style }) {
+  const p = Math.round(pct || 0)
+  return (
+    <span role="img" aria-label={`${confidenceBand(p)} confidence`} title={`${confidenceBand(p)} confidence`}
+      style={{
+        display: 'inline-block', width: size, height: size, borderRadius: '50%',
+        background: confidenceColor(p), flexShrink: 0, verticalAlign: 'middle', ...style,
+      }} />
+  )
+}
+
+/* Honest label for a goals-market recommendation whose OWN side sits at or under
+ * a near-coin-flip, mirroring the 1X2 SAFE_PICK_FLOOR so the same rule reads
+ * consistently across every market. Under 50% the recommended side is less
+ * likely than not; in the 50–55% band it is line-ball. Null above that. */
+function nearTossNote(recProb) {
+  if (typeof recProb !== 'number') return null
+  if (recProb < SAFE_PICK_FLOOR) return 'Under even money on our own numbers — a lean at most, not a confident call.'
+  if (recProb < 0.55) return 'A line-ball call — barely better than a coin-toss.'
+  return null
+}
+
+/* Friendly language helpers — plain words first, numbers second.
+ * modelProb gates the wording: an outcome the model rates below even money can
+ * never be described confidently, whatever its internal confidence says. */
+function confidencePhrase(conf, modelProb) {
+  if (typeof modelProb === 'number' && modelProb < SAFE_PICK_FLOOR) {
+    return 'but there’s no clear favourite here — it’s close to a toss-up, so treat it as a lean at most'
+  }
   const c = conf || 0
   if (c >= 0.78) return 'and we feel strongly about it'
   if (c >= 0.68) return 'and we’re fairly confident'
@@ -1302,7 +1380,14 @@ function MatchesScreen({
   const dateLine = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })
   const topConf = topPick ? Math.round((topPick.a.recommendation.confidence || 0) * 100) : 0
   const topEdge = topPick ? (topPick.a.recommendation.value_edge || 0) : 0
-  const highConviction = topPick && (topPick.a.recommendation.confidence || 0) >= 0.72
+  /* "Sharpest read" and the halo are confident framing, so both require the top
+   * pick to actually clear the even-money floor — not just to be the highest
+   * confidence on an uncertain board. Below it, the card says so honestly. */
+  const topSafe = topPick && isSafePick(topPick.a.recommendation)
+  const highConviction = topPick && (topPick.a.recommendation.confidence || 0) >= 0.72 && topSafe
+  const topLabel = topSafe
+    ? (fixturesWindowed ? 'Sharpest read on the board' : "Today's sharpest read")
+    : (fixturesWindowed ? 'Closest to a lean on the board' : "Today's nearest lean")
 
   return (
     <div>
@@ -1337,7 +1422,7 @@ function MatchesScreen({
             <Card onClick={() => onOpen(topPick.fx)}
               className={`iq-elevated iq-lift${highConviction ? ' iq-halo' : ''}`}
               style={{ padding: 32, cursor: 'pointer' }}>
-              <Eyebrow style={{ color: T.accent }}>{fixturesWindowed ? 'Sharpest read on the board' : "Today's sharpest read"}</Eyebrow>
+              <Eyebrow style={{ color: topSafe ? T.accent : T.sub }}>{topLabel}</Eyebrow>
               <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginTop: 16 }}>
                 <Crest src={topPick.fx.homeLogo} name={topPick.fx.homeTeam} size={26} />
                 <Crest src={topPick.fx.awayLogo} name={topPick.fx.awayTeam} size={26} />
@@ -1349,6 +1434,7 @@ function MatchesScreen({
                 {pickHeadline(topPick.a.recommendation.pick, topPick.fx)}
               </div>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 14, flexWrap: 'wrap' }}>
+                <ConfidenceDot pct={topConf} size={9} style={{ alignSelf: 'center' }} />
                 <span style={{ ...type.display, fontSize: 36, color: T.ink, fontVariantNumeric: 'tabular-nums' }}>{topConf}%</span>
                 <span style={{ ...type.small, fontSize: 13 }}>sure</span>
                 {topEdge > 0 && (
@@ -1782,6 +1868,10 @@ function GoalsMarketsCard({ goals }) {
           <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
             {goals.thresholds.map(t => {
               const overPct = Math.round(t.overProbability * 100)
+              // The probability of the side actually recommended, for the floor check.
+              const recProb = t.recommendation === 'over' ? t.overProbability : 1 - t.overProbability
+              const tossNote = t.recommendationMatchesProb ? nearTossNote(recProb) : null
+              const tConf = t.confidence != null ? Math.round(t.confidence * 100) : null
               return (
                 <div key={t.line} style={{ background: T.card2, borderRadius: 16, padding: 20 }}>
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
@@ -1805,12 +1895,18 @@ function GoalsMarketsCard({ goals }) {
                       ))}
                     </div>
                   )}
-                  <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10 }}>
-                    {t.confidence != null
-                      ? `${Math.round(t.confidence * 100)}% confident`
-                      : 'confidence not given'}
-                    {t.confidenceLabel ? ` · ${t.confidenceLabel}` : ''}
+                  <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {tConf != null && <ConfidenceDot pct={tConf} size={7} />}
+                    <span>
+                      {tConf != null ? `${tConf}% confident` : 'confidence not given'}
+                      {t.confidenceLabel ? ` · ${t.confidenceLabel}` : ''}
+                    </span>
                   </div>
+                  {/* Same even-money floor as the main pick: a recommendation that
+                      barely clears a coin-flip is said to be one, not sold as a call. */}
+                  {tossNote && (
+                    <div style={{ ...type.small, fontSize: 12.5, color: T.warn, marginTop: 8 }}>{tossNote}</div>
+                  )}
                   {/* Recommending a side its own probability argues against. */}
                   {!t.recommendationMatchesProb && warn(
                     <>
@@ -1835,12 +1931,20 @@ function GoalsMarketsCard({ goals }) {
             {goals.legacy.reasoning && (
               <div style={{ ...type.small, color: T.sub, marginTop: 8 }}>{goals.legacy.reasoning}</div>
             )}
-            <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10 }}>
-              {goals.legacy.probability != null
-                ? `${Math.round(goals.legacy.probability * 100)}% likely · `
-                : ''}
-              {goals.legacy.confidence != null ? `${Math.round(goals.legacy.confidence * 100)}% confident` : 'confidence not given'}
+            <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+              {goals.legacy.confidence != null && <ConfidenceDot pct={Math.round(goals.legacy.confidence * 100)} size={7} />}
+              <span>
+                {goals.legacy.probability != null
+                  ? `${Math.round(goals.legacy.probability * 100)}% likely · `
+                  : ''}
+                {goals.legacy.confidence != null ? `${Math.round(goals.legacy.confidence * 100)}% confident` : 'confidence not given'}
+              </span>
             </div>
+            {/* legacy.probability is the probability OF the recommendation, so it
+                feeds the floor check directly. */}
+            {nearTossNote(goals.legacy.probability) && (
+              <div style={{ ...type.small, fontSize: 12.5, color: T.warn, marginTop: 8 }}>{nearTossNote(goals.legacy.probability)}</div>
+            )}
             <div style={{ ...type.small, fontSize: 13, color: T.faint, marginTop: 10 }}>
               An earlier read, covering the 2.5 line only. Re-run the analysis for all
               three lines.
@@ -1873,12 +1977,22 @@ function GoalsMarketsCard({ goals }) {
                 ))}
               </div>
             )}
-            <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10 }}>
-              {goals.btts.confidence != null
-                ? `${Math.round(goals.btts.confidence * 100)}% confident`
-                : 'confidence not given'}
-              {goals.btts.confidenceLabel ? ` · ${goals.btts.confidenceLabel}` : ''}
+            <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
+              {goals.btts.confidence != null && <ConfidenceDot pct={Math.round(goals.btts.confidence * 100)} size={7} />}
+              <span>
+                {goals.btts.confidence != null
+                  ? `${Math.round(goals.btts.confidence * 100)}% confident`
+                  : 'confidence not given'}
+                {goals.btts.confidenceLabel ? ` · ${goals.btts.confidenceLabel}` : ''}
+              </span>
             </div>
+            {/* Probability of the side actually recommended (yes → both score,
+                no → not) against the even-money floor. */}
+            {goals.btts.probability != null && (() => {
+              const recProb = goals.btts.recommendation === 'yes' ? goals.btts.probability : 1 - goals.btts.probability
+              const note = nearTossNote(recProb)
+              return note ? <div style={{ ...type.small, fontSize: 12.5, color: T.warn, marginTop: 8 }}>{note}</div> : null
+            })()}
             {!goals.btts.agreesWithScoreline && warn(
               <>
                 <strong style={{ fontWeight: 600 }}>This doesn't line up with our score: </strong>
@@ -2011,15 +2125,18 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
               It doesn't count towards your record.
             </div>
           )}
-          <div style={{ ...type.body, fontSize: 19, color: T.sub, marginTop: 12 }}>
-            We're <strong style={{ color: T.ink, fontWeight: 560 }}>{conf}% sure</strong>, {confidencePhrase(r.confidence)}.
+          <div style={{ ...type.body, fontSize: 19, color: T.sub, marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 9, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <ConfidenceDot pct={conf} size={10} />
+            <span>We're <strong style={{ color: T.ink, fontWeight: 560 }}>{conf}% sure</strong>, {confidencePhrase(r.confidence, r.model_probability)}.</span>
           </div>
           <div style={{ maxWidth: 320, margin: '26px auto 0' }}>
+            {/* Thin bar, filled in the confidence band's traffic-light colour —
+                the same signal as the dot, at a glance. */}
             <div style={{ height: 6, background: T.card2, borderRadius: 999, overflow: 'hidden' }}>
               <motion.div
                 initial={{ width: 0 }} whileInView={{ width: `${conf}%` }}
                 viewport={{ once: true }} transition={{ duration: 1, ease: [0.22, 1, 0.36, 1] }}
-                style={{ height: '100%', borderRadius: 999, background: T.accent }} />
+                style={{ height: '100%', borderRadius: 999, background: confidenceColor(conf) }} />
             </div>
           </div>
         </div>
@@ -3139,9 +3256,10 @@ function BetCard({ entry, onOpen, comboActive, onToggleCombo, settled = false })
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 18 }}>
         <div style={{ flex: 1, height: 5, background: T.card2, borderRadius: 999, overflow: 'hidden' }}>
-          <div style={{ width: `${conf}%`, height: '100%', background: T.accent, borderRadius: 999 }} />
+          <div style={{ width: `${conf}%`, height: '100%', background: confidenceColor(conf), borderRadius: 999 }} />
         </div>
-        <span style={{ ...type.num, fontSize: 13, color: T.sub }}>
+        <span style={{ ...type.num, fontSize: 13, color: T.sub, display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+          <ConfidenceDot pct={conf} />
           {settled ? `${conf}% sure at the time` : `${conf}% sure`}
         </span>
         {!settled && (
@@ -3352,8 +3470,13 @@ function BestBetsScreen({ fixtures, analysisCache, onOpen, comboSelections, onTo
     .filter(e => matchPhase(e.fx) !== 'upcoming')
     .sort((x, y) => (y.a.resolvedAt || y.a._ts || 0) - (x.a.resolvedAt || x.a._ts || 0))
 
-  const strong = open.filter(e => (e.a.recommendation?.confidence || 0) >= 0.65)
-  const rest = open.filter(e => (e.a.recommendation?.confidence || 0) < 0.65)
+  /* "Strongest reads" is confident framing, so a pick earns the top section only
+   * if it is both high-confidence AND clears the even-money floor. A pick the
+   * model is sure about but rates below 50% to actually land drops to the weaker
+   * leans below rather than being sold as a strong bet. */
+  const isStrong = (a) => (a.recommendation?.confidence || 0) >= 0.65 && isSafePick(a.recommendation)
+  const strong = open.filter(e => isStrong(e.a))
+  const rest = open.filter(e => !isStrong(e.a))
 
   // Selections that are no longer bettable — counted here, where both the full
   // and the open set are in scope, so the slip can name the change.
@@ -3517,9 +3640,12 @@ function FollowCard({ fixture: f, analysis: a, onOpen, onToggleTrack, onResolve,
           marginTop: 14, padding: '11px 16px', background: T.card2, borderRadius: 12,
           display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap',
         }}>
-          <span style={{ ...type.small, color: T.ink }}>
-            We said <strong style={{ fontWeight: 560 }}>{pickShort(a.recommendation.pick, f)}</strong>
-            <span style={{ color: T.faint }}> · {Math.round((a.recommendation.confidence || 0) * 100)}% sure</span>
+          <span style={{ ...type.small, color: T.ink, display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span>We said <strong style={{ fontWeight: 560 }}>{pickShort(a.recommendation.pick, f)}</strong></span>
+            <span style={{ color: T.faint, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              · <ConfidenceDot pct={Math.round((a.recommendation.confidence || 0) * 100)} size={7} />
+              {Math.round((a.recommendation.confidence || 0) * 100)}% sure
+            </span>
           </span>
           {a.resolved && (
             <span style={{
@@ -3835,9 +3961,10 @@ function RecordScreen({
                         <div style={{ ...type.small, fontSize: 14, fontWeight: 560, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {fx ? `${fx.homeTeam} v ${fx.awayTeam}` : `Match #${id}`}
                         </div>
-                        <div style={{ ...type.small, fontSize: 12, color: T.faint, marginTop: 2 }}>
-                          Said {fx ? pickShort(r.pick, fx) : r.pick} · {conf}% sure
-                          {a.finalScore ? ` · ended ${a.finalScore}` : ''}
+                        <div style={{ ...type.small, fontSize: 12, color: T.faint, marginTop: 2, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span>Said {fx ? pickShort(r.pick, fx) : r.pick} ·</span>
+                          <ConfidenceDot pct={conf} size={7} />
+                          <span>{conf}% sure{a.finalScore ? ` · ended ${a.finalScore}` : ''}</span>
                         </div>
                       </div>
                       {a.resolved ? (
