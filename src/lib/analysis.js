@@ -64,12 +64,15 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
       label: 'Total goals — 1.5, 2.5, 3.5',
       system: OVER_UNDER_SYSTEM_PROMPT,
       prompt: buildOverUnderPrompt(fixture, mainAnalysis, context),
-      /* Raised from the shared 1,800 because this response is now three reasoned
-       * blocks instead of one. Reserved cost becomes ~700 prompt + 2,600 =
-       * 3,300, and with BTTS unchanged at ~2,474 the pair sits at 5,774 of the
-       * 8,000-per-minute ceiling they share in the second window — still ~2,200
-       * spare, so the stagger below does not need to change. */
-      params: { ...AGENT_PARAMS, max_tokens: 2600 },
+      /* Back on the shared 1,800. The earlier bump to 2,600 for the three-line
+       * schema was sized by guesswork and turned out to be unnecessary. Measured
+       * against the live API with a full, worst-case brief (complete form, both
+       * teams' season standings, five h2h meetings, live odds): prompt 1,290, and
+       * the three-threshold answer finished in 442 and 525 completion tokens over
+       * two clean finish:"stop" runs at reasoning_effort 'low'. 1,800 clears the
+       * observed max by ~3.4x — no truncation risk — and drops this call's
+       * reservation from 3,890 to 3,090 against the 8,000/min ceiling. */
+      params: AGENT_PARAMS,
     },
     {
       key: 'btts',
@@ -79,44 +82,29 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
       params: AGENT_PARAMS,
     },
   ]
-  /* Staggered rather than parallel. The main read has just spent most of the
-   * account's 8,000 tokens-per-minute allowance, so firing both of these
-   * immediately guarantees a rate-limit rejection and an empty goals panel.
-   * They're background enrichment — waiting is free, failing isn't.
+  /* Staggered at 70s and 100s, and both market calls fire in the minute AFTER
+   * the synthesis call rather than alongside it.
    *
-   * The first call waits too, which it previously did not, and this is now
-   * measured rather than assumed. Before the news context existed the main read
-   * was counted at ~5,840 tokens up front (prompt + max_tokens) and this call
-   * added ~2,083, landing at ~7,923 — inside the 8,000/min window by under 1%.
-   * The RECENT NEWS CONTEXT block adds ~211 prompt tokens, which takes the same
-   * pair to ~8,219: over the ceiling. Firing immediately would now reliably 429,
-   * and that failure is swallowed and shows up as a silently missing goals panel.
-   * Timing only — model, params and prompts are untouched.
+   * The binding constraint is the account's 8,000 tokens-per-minute ceiling, and
+   * Groq counts prompt + max_tokens against it up front. That reservation model
+   * is measured, not assumed: firing these calls live, one was rejected at a
+   * cumulative 8,033 ("429 … Limit 8000, Used 4143, Requested 3890") and another
+   * at 10,578 — so the full max_tokens really is reserved, correcting an earlier
+   * note here that guessed Groq under-reserves.
    *
-   * Re-measured against the live API after the standings/H2H/odds data was wired
-   * into these prompts (Internacional v Flamengo, real payloads): main read
-   * prompt 2,811 + max_tokens 3,600 = 6,411; each market call 674 + 1,800 =
-   * 2,474, up ~160 prompt tokens from before. Both market calls were accepted on
-   * this same 25s/50s stagger with no 429, so the timing is left alone. Worth
-   * knowing that the reserve arithmetic above is conservative: 6,411 + 2,474
-   * inside one minute exceeds 8,000 on paper and was still accepted, so Groq is
-   * evidently not reserving the full max_tokens the way this comment assumed.
-   * The stagger stays because it is cheap insurance, not because that sum is
-   * exact. */
-  /* 70s and 100s, not 25s and 50s.
+   * Worst-case reservations (prompt + max_tokens), all measured live:
+   *   synthesis    ~3,400 + 4,200 = 7,600   → leaves only ~400 in its own minute
+   *   over_under    1,290 + 1,800 = 3,090
+   *   btts            807 + 1,800 = 2,607
    *
-   * Both old offsets sat inside the same rolling minute as the main read. That
-   * was already over the 8,000/min ceiling on paper and only worked because
-   * Groq does not reserve the full max_tokens. Raising the synthesis call's
-   * max_tokens to 4,600 for the scoreline took its reservation to roughly
-   * 7,500, which leaves under 600 in that minute — not enough for a 2,474-token
-   * market call, so both would now reliably 429 and the goals panel would go
-   * quietly missing.
-   *
-   * Pushing the first past 60s puts both calls in the next window, where they
-   * share 8,000 between them and fit comfortably. These are background
-   * enrichment behind an already-rendered verdict, so the extra wait costs the
-   * reader nothing; a silently empty panel would have cost them the feature. */
+   * Synthesis alone nearly fills its minute, so neither market call can share it.
+   * The first waits until 70s — clear of synthesis's rolling-60s window with a
+   * 10s cushion that also survives the single synthesis retry (fired a few
+   * seconds in, its window closes by ~63s). In the second window the two market
+   * calls total 3,090 + 2,607 = 5,697, well under 8,000, so 70s/100s carries both
+   * with ~2,300 to spare. They are background enrichment behind an already-
+   * rendered verdict, so the wait costs the reader nothing while a 429 would cost
+   * them the panel — the stagger is correctly sized and stays. */
   const results = await Promise.allSettled(markets.map(async (market, i) => {
     await new Promise(r => setTimeout(r, 70000 + i * 30000))
     const res = await fetch(GROQ_ENDPOINT, {
