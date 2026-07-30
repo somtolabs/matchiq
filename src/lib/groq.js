@@ -24,6 +24,29 @@
  * window with a real fixture brief (~2,600–3,100 prompt tokens) while still
  * leaving several times more room than the finished JSON needs. */
 
+/* ---------- ACTIVE PROVIDER: Cerebras ----------
+ *
+ * The analysis pipeline runs on Cerebras (same open-weights gpt-oss-120b model
+ * as Groq). Two things differ from Groq and are both captured here:
+ *   - the model id carries no `openai/` prefix on Cerebras;
+ *   - calls go through the same-origin serverless proxy /api/cerebras, which
+ *     attaches CEREBRAS_API_KEY server-side, rather than being fetched directly
+ *     with a VITE_-exposed key. The client therefore sends NO auth header.
+ *
+ * reasoning_effort and reasoning_format were verified to behave identically to
+ * Groq on a real call (medium effort produces hidden internal reasoning before
+ * the visible JSON answer; the schema parses unchanged). SYNTHESIS_PARAMS and
+ * AGENT_PARAMS below are reused verbatim. */
+export const LLM_MODEL = 'gpt-oss-120b'
+export const LLM_ENDPOINT = '/api/cerebras'
+
+/* ---------- PREVIOUS PROVIDER: Groq (kept for revert) ----------
+ *
+ * Left in place, not deleted, so reverting is a one-line switch back if Cerebras
+ * proves unreliable: point the two call sites at GROQ_ENDPOINT with GROQ_MODEL
+ * and restore the `Authorization: Bearer ${VITE_GROQ_API_KEY}` header. Note that
+ * path re-exposes the key in the browser bundle — the reason the move to a proxy
+ * was made — so it is a temporary fallback, not a resting state. */
 export const GROQ_MODEL = 'openai/gpt-oss-120b'
 export const GROQ_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions'
 

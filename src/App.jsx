@@ -16,7 +16,7 @@ import { getFixtureNews, getHeadlines, relativeTime } from './lib/news.js'
 import { getMatchGoals, formatMinute } from './lib/matchevents.js'
 import { SYSTEM_PROMPT, buildPrompt, standingsRowFor } from './lib/prompts.js'
 import {
-  GROQ_MODEL, GROQ_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject,
+  LLM_MODEL, LLM_ENDPOINT, SYNTHESIS_PARAMS, extractFirstJsonObject,
   isJsonValidationFailure, ANALYSIS_INCOMPLETE_MESSAGE,
 } from './lib/groq.js'
 import {
@@ -5484,7 +5484,7 @@ function AboutScreen({ apiStatus, user, onSignOut, onOpenProfile, onOpenPrivacy 
           <Wordmark size={26} />
         </div>
         <div style={{ ...type.small, color: T.faint, marginTop: 14, lineHeight: 1.8 }}>
-          Data: football-data.org and the-odds-api.com · Analysis: Groq ({GROQ_MODEL})<br />
+          Data: football-data.org and the-odds-api.com · Analysis: Cerebras ({LLM_MODEL})<br />
           <button onClick={onOpenPrivacy} style={{
             background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
             color: T.sub, font: 'inherit', textDecoration: 'underline',
@@ -6129,8 +6129,9 @@ function MatchIQ({ user, username, onUsernameChange }) {
   }, [activeTab, ledger])
 
   useEffect(() => {
-    const k = import.meta.env.VITE_GROQ_API_KEY || ''
-    console.log('VITE_GROQ_API_KEY prefix:', k ? k.slice(0, 8) + '…' : '(missing)')
+    // The analysis key is no longer in the browser — it lives server-side behind
+    // /api/cerebras. Nothing to log here but the provider the client will reach.
+    console.log(`[llm] analysis via ${LLM_ENDPOINT} (model ${LLM_MODEL})`)
   }, [])
 
   /* -------- competition enrichment trigger -------- */
@@ -6500,7 +6501,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
        * below re-sends exactly what failed rather than rebuilding a prompt that
        * could differ. It also means the news fetch above is not repeated. */
       const body = JSON.stringify({
-        model: GROQ_MODEL,
+        model: LLM_MODEL,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: buildPrompt(fx, { standings, news }) },
@@ -6508,40 +6509,50 @@ function MatchIQ({ user, username, onUsernameChange }) {
         response_format: { type: 'json_object' },
         ...SYNTHESIS_PARAMS,
       })
+      /* Posted to the same-origin proxy (/api/cerebras), which attaches the key
+       * server-side — no Authorization header leaves the browser. The body is
+       * built once and re-sent verbatim by the retry below, so the retry cannot
+       * differ from what failed, and the news fetch above is never repeated. */
       const postSynthesis = async () => {
-        const res = await fetch(GROQ_ENDPOINT, {
+        const res = await fetch(LLM_ENDPOINT, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`,
-          },
+          headers: { 'Content-Type': 'application/json' },
           body,
         })
         return res.json()
       }
 
+      /* Did this response fail to yield a usable verdict for a transient,
+       * retry-worthy reason (as opposed to a hard error we should surface)?
+       *
+       * On Groq the transient JSON failure surfaced as an explicit
+       * json_validate_failed error CODE. Cerebras is OpenAI-compatible but does
+       * not use that code — when a sampled completion is malformed it comes back
+       * as a 200 whose content simply won't parse, or parses without a
+       * recommendation. Both are the same class of sampling miss the same body
+       * usually clears on one re-send, so both are treated as retry-worthy here. */
+      const isTransientMiss = (d) => {
+        if (isJsonValidationFailure(d.error)) return true
+        if (d.error) return false // a real error — surface it, don't retry
+        try { return !hasVerdict(extractFirstJsonObject(d.choices?.[0]?.message?.content)) }
+        catch { return true }
+      }
+
       let data = await postSynthesis()
-      /* One automatic retry, and only for the one failure that earns it.
-       *
-       * json_validate_failed means the model's output didn't validate as JSON
-       * this time — a sampling outcome, not a bad request, and the same body
-       * generally validates on the next attempt. The reader was previously shown
-       * Groq's raw "Please adjust your prompt" string and had to press the button
-       * again themselves; this does that for them, inside the loading state that
-       * is already on screen, so a transient miss is invisible.
-       *
-       * Scoped deliberately: only this call, only this error code, only once. Any
-       * other Groq error still surfaces immediately without a second request, so
-       * a successful analysis costs exactly the calls it always did. */
-      if (isJsonValidationFailure(data.error)) {
-        console.warn('[groq] json_validate_failed on synthesis — retrying once')
+      /* One automatic retry, and only for the transient miss above — scoped to
+       * this call, and to one extra attempt. Any hard error still surfaces
+       * immediately without a second request, so a successful analysis costs
+       * exactly the calls it always did. The retry runs inside the loading state
+       * already on screen, so a transient miss is invisible to the reader. */
+      if (isTransientMiss(data)) {
+        console.warn('[llm] transient synthesis JSON miss — retrying once')
         data = await postSynthesis()
-        if (isJsonValidationFailure(data.error)) {
-          console.error('[groq] json_validate_failed twice — giving up')
+        if (isTransientMiss(data)) {
+          console.error('[llm] synthesis JSON miss twice — giving up')
           throw new Error(ANALYSIS_INCOMPLETE_MESSAGE)
         }
       }
-      if (data.error) throw new Error(data.error.message || 'Groq rejected the request')
+      if (data.error) throw new Error(data.error.message || 'The analysis service rejected the request')
       // A reasoning model spends most of its budget thinking; if the ceiling is
       // hit the JSON arrives half-written, so name that rather than failing on parse.
       if (data.choices?.[0]?.finish_reason === 'length') {

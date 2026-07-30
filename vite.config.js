@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const fdKey = (env.VITE_FOOTBALL_API_KEY || '').trim()
+  const cbKey = (env.CEREBRAS_API_KEY || '').trim()
 
   return {
     plugins: [react()],
@@ -31,6 +32,22 @@ export default defineConfig(({ mode }) => {
           configure: (proxy) => {
             proxy.on('error', (err) => console.log('odds proxy error', err))
             proxy.on('proxyRes', (proxyRes) => console.log('odds proxy status:', proxyRes.statusCode))
+          },
+        },
+        // Mirrors api/cerebras.js so the analysis pipeline works in `vite dev`
+        // too — Vercel serverless functions don't run under the dev server. The
+        // key is injected here from the (non-VITE_) server env, never bundled.
+        '/api/cerebras': {
+          target: 'https://api.cerebras.ai',
+          changeOrigin: true,
+          secure: true,
+          rewrite: () => '/v1/chat/completions',
+          configure: (proxy) => {
+            proxy.on('proxyReq', (proxyReq) => {
+              if (cbKey) proxyReq.setHeader('Authorization', `Bearer ${cbKey}`)
+            })
+            proxy.on('error', (err) => console.log('[cerebras proxy error]', err.message))
+            proxy.on('proxyRes', (proxyRes) => console.log('[cerebras proxy]', proxyRes.statusCode))
           },
         },
       },

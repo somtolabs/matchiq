@@ -1,7 +1,7 @@
 /* Analysis maths and secondary-market agent calls.
  * The Groq endpoint and auth header pattern are unchanged. */
 
-import { GROQ_MODEL, GROQ_ENDPOINT, AGENT_PARAMS, extractFirstJsonObject } from './groq.js'
+import { LLM_MODEL, LLM_ENDPOINT, AGENT_PARAMS, extractFirstJsonObject } from './groq.js'
 import { settlementScore, matchScore } from './football.js'
 import {
   MARKET_SYSTEM_PROMPT,
@@ -107,14 +107,16 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
    * them the panel — the stagger is correctly sized and stays. */
   const results = await Promise.allSettled(markets.map(async (market, i) => {
     await new Promise(r => setTimeout(r, 70000 + i * 30000))
-    const res = await fetch(GROQ_ENDPOINT, {
+    // Through the same-origin proxy — no auth header, the key is attached
+    // server-side. The stagger is kept exactly as it was: it is a
+    // rate-limit guard sized to a provider's per-minute ceiling, and holding
+    // these background calls back one minute behind an already-rendered verdict
+    // costs the reader nothing, so it stays as a conservative safety margin.
+    const res = await fetch(LLM_ENDPOINT, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`,
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: GROQ_MODEL,
+        model: LLM_MODEL,
         messages: [
           { role: 'system', content: market.system },
           { role: 'user', content: market.prompt },
@@ -124,12 +126,12 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
       }),
     })
     const data = await res.json()
-    if (data.error) throw new Error(data.error.message || 'groq rejected the market call')
+    if (data.error) throw new Error(data.error.message || 'the analysis service rejected the market call')
     /* Logged because the reservation arithmetic above is only as good as its
      * inputs, and those were estimates until a real call reported them. Makes
      * the next person's budget decision measurable rather than inherited. */
     const u = data.usage || {}
-    console.log(`[groq] ${market.key}: prompt ${u.prompt_tokens ?? '?'} + completion ${u.completion_tokens ?? '?'} = ${u.total_tokens ?? '?'} tokens · reserved ${(u.prompt_tokens ?? 0) + (market.params.max_tokens || 0)} against the 8,000/min ceiling · finish: ${data.choices?.[0]?.finish_reason ?? '?'}`)
+    console.log(`[llm] ${market.key}: prompt ${u.prompt_tokens ?? '?'} + completion ${u.completion_tokens ?? '?'} = ${u.total_tokens ?? '?'} tokens · reserved ${(u.prompt_tokens ?? 0) + (market.params.max_tokens || 0)} · finish: ${data.choices?.[0]?.finish_reason ?? '?'}`)
     const parsed = extractFirstJsonObject(data.choices?.[0]?.message?.content)
     return { key: market.key, label: market.label, result: parsed }
   }))
