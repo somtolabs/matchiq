@@ -22,6 +22,7 @@ import {
 import {
   calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve, countsTowardRecord,
   edgeToOutcome, AGENT_PERF_EMPTY, hasVerdict, sanitizeAnalysisCache, readScoreline,
+  readGoalsMarkets,
 } from './lib/analysis.js'
 import {
   lookupOddsForFixture, sportKeysForFixtures, readOddsStore, writeOddsStore, nameScore,
@@ -1700,6 +1701,13 @@ function ThinkingState({ fixture: f }) {
   )
 }
 
+/* A market-implied probability for the numbers grid, or an honest "No odds".
+ *
+ * Zero counts as absent: no bookmaker prices an outcome at 0%, so the only way
+ * that value reaches here is the old placeholder, and rendering it as "0%" told
+ * the reader the market had ruled the outcome out. */
+const impliedCell = (v) => (typeof v === 'number' && v > 0 ? `${Math.round(v * 100)}%` : 'No odds')
+
 /* Agreement between the three angles, derived from the real analysis JSON */
 function angleReads(data, fx) {
   const reads = []
@@ -1727,6 +1735,200 @@ function angleReads(data, fx) {
   return reads
 }
 
+/* The goals angle: three nested total-goals lines plus both-teams-to-score.
+ *
+ * Everything shown here is a number the model actually returned. The checks
+ * readGoalsMarkets performs — nesting, completeness, agreement with the
+ * scoreline and with each line's own probability — are surfaced as warnings
+ * rather than repaired, the same call the scoreline panel already makes when its
+ * score contradicts the pick. A contradiction the reader can see is worth more
+ * than a tidy number we invented to hide it.
+ *
+ * Probabilities are stated in the fixed OVER direction throughout, because that
+ * is the one thing that makes the three lines comparable. Where the model
+ * recommends "under", the copy says so and still prints the over probability,
+ * rather than flipping the number and leaving the reader to guess which
+ * direction any given percentage points. */
+function GoalsMarketsCard({ goals }) {
+  const warn = (text) => (
+    <div style={{
+      marginTop: 14, padding: '14px 16px', background: T.badBg, borderRadius: 12,
+      ...type.small, fontSize: 13.5, color: T.ink,
+    }}>{text}</div>
+  )
+
+  return (
+    <Reveal>
+      <Card style={{ padding: 30 }}>
+        <Eyebrow>A goals angle, if you prefer</Eyebrow>
+
+        {goals.expectedTotal != null && (
+          <div style={{ ...type.small, fontSize: 14.5, color: T.sub, marginTop: 14 }}>
+            We make this about{' '}
+            <strong style={{ ...type.num, color: T.ink, fontWeight: 560 }}>
+              {goals.expectedTotal.toFixed(1)}
+            </strong>{' '}
+            goals in total.
+          </div>
+        )}
+
+        {goals.thresholds.length > 0 && (
+          <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {goals.thresholds.map(t => {
+              const overPct = Math.round(t.overProbability * 100)
+              return (
+                <div key={t.line} style={{ background: T.card2, borderRadius: 16, padding: 20 }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+                    <span style={{ ...type.small, fontSize: 14.5, fontWeight: 560, color: T.ink }}>
+                      {t.recommendation === 'over' ? 'More' : 'Fewer'} than {t.line} goals
+                    </span>
+                    <span style={{ ...type.num, fontSize: 13, color: T.faint }}>
+                      {overPct}% chance of going over {t.line}
+                    </span>
+                  </div>
+                  {t.reasoning && (
+                    <div style={{ ...type.small, color: T.sub, marginTop: 8 }}>{t.reasoning}</div>
+                  )}
+                  {t.keyFactors.length > 0 && (
+                    <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {t.keyFactors.map((k, i) => (
+                        <span key={i} style={{
+                          ...type.small, fontSize: 12.5, color: T.sub, background: T.bg,
+                          borderRadius: 999, padding: '5px 12px',
+                        }}>{k}</span>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10 }}>
+                    {t.confidence != null
+                      ? `${Math.round(t.confidence * 100)}% confident`
+                      : 'confidence not given'}
+                    {t.confidenceLabel ? ` · ${t.confidenceLabel}` : ''}
+                  </div>
+                  {/* Recommending a side its own probability argues against. */}
+                  {!t.recommendationMatchesProb && warn(
+                    <>
+                      <strong style={{ fontWeight: 600 }}>This one argues against itself: </strong>
+                      it calls {t.recommendation} {t.line} while putting the chance of going
+                      over at {overPct}%. Take the percentage over the wording.
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Cached from before the three-line read existed. Labelled, not dressed
+            up as the newer one — its probability means something different. */}
+        {goals.legacy && (
+          <div style={{ marginTop: 18, background: T.card2, borderRadius: 16, padding: 20 }}>
+            <div style={{ ...type.small, fontSize: 14.5, fontWeight: 560, color: T.ink }}>
+              {goals.legacy.recommendation === 'over' ? 'More' : 'Fewer'} than 2.5 goals
+            </div>
+            {goals.legacy.reasoning && (
+              <div style={{ ...type.small, color: T.sub, marginTop: 8 }}>{goals.legacy.reasoning}</div>
+            )}
+            <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10 }}>
+              {goals.legacy.probability != null
+                ? `${Math.round(goals.legacy.probability * 100)}% likely · `
+                : ''}
+              {goals.legacy.confidence != null ? `${Math.round(goals.legacy.confidence * 100)}% confident` : 'confidence not given'}
+            </div>
+            <div style={{ ...type.small, fontSize: 13, color: T.faint, marginTop: 10 }}>
+              An earlier read, covering the 2.5 line only. Re-run the analysis for all
+              three lines.
+            </div>
+          </div>
+        )}
+
+        {goals.btts && (
+          <div style={{ marginTop: 14, background: T.card2, borderRadius: 16, padding: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ ...type.small, fontSize: 14.5, fontWeight: 560, color: T.ink }}>
+                {goals.btts.recommendation === 'yes' ? 'Both teams to score' : 'Not both teams to score'}
+              </span>
+              {goals.btts.probability != null && (
+                <span style={{ ...type.num, fontSize: 13, color: T.faint }}>
+                  {Math.round(goals.btts.probability * 100)}% chance both do
+                </span>
+              )}
+            </div>
+            {goals.btts.reasoning && (
+              <div style={{ ...type.small, color: T.sub, marginTop: 8 }}>{goals.btts.reasoning}</div>
+            )}
+            {goals.btts.keyFactors.length > 0 && (
+              <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {goals.btts.keyFactors.map((k, i) => (
+                  <span key={i} style={{
+                    ...type.small, fontSize: 12.5, color: T.sub, background: T.bg,
+                    borderRadius: 999, padding: '5px 12px',
+                  }}>{k}</span>
+                ))}
+              </div>
+            )}
+            <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10 }}>
+              {goals.btts.confidence != null
+                ? `${Math.round(goals.btts.confidence * 100)}% confident`
+                : 'confidence not given'}
+              {goals.btts.confidenceLabel ? ` · ${goals.btts.confidenceLabel}` : ''}
+            </div>
+            {!goals.btts.agreesWithScoreline && warn(
+              <>
+                <strong style={{ fontWeight: 600 }}>This doesn't line up with our score: </strong>
+                our likeliest scoreline points the other way on whether both sides find the net.
+              </>
+            )}
+          </div>
+        )}
+
+        {goals.consistencyNote && (
+          <div style={{ ...type.small, fontSize: 13.5, color: T.sub, marginTop: 16 }}>
+            {goals.consistencyNote}
+          </div>
+        )}
+
+        {/* Arithmetic that cannot hold. Shown in full, with the numbers named. */}
+        {!goals.coherent && warn(
+          <>
+            <strong style={{ fontWeight: 600 }}>These prices contradict each other: </strong>
+            {goals.violations.join('; ')}. We've left the numbers exactly as our model
+            gave them rather than quietly correcting one — but treat this goals read
+            with real caution.
+          </>
+        )}
+
+        {goals.thresholds.length > 0 && !goals.complete && warn(
+          <>
+            <strong style={{ fontWeight: 600 }}>Partial read: </strong>
+            only {goals.thresholds.length} of the three lines came back usable. The rest
+            aren't shown because we don't have them, not because there's nothing to say.
+          </>
+        )}
+
+        {!goals.agreesWithScoreline && warn(
+          <>
+            <strong style={{ fontWeight: 600 }}>This doesn't line up with our score: </strong>
+            our likeliest scoreline totals {goals.scorelineTotal} goals, while our 2.5 line
+            points the other way. Worth weighing both rather than either alone.
+          </>
+        )}
+
+        {goals.dataQuality === 'low' && (
+          <div style={{
+            marginTop: 14, padding: '14px 16px', background: T.card2, borderRadius: 12,
+            ...type.small, fontSize: 13.5, color: T.ink,
+          }}>
+            <strong style={{ fontWeight: 600 }}>Thin data: </strong>
+            there wasn't much goal history behind this one, so these lines rest on less
+            than our usual read does.
+          </div>
+        )}
+      </Card>
+    </Reveal>
+  )
+}
+
 function VerdictStory({ fixture: fx, data, onReRun, busy }) {
   const r = data.recommendation || {}
   const conf = Math.round((r.confidence || 0) * 100)
@@ -1745,7 +1947,13 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
     draw: data.market_analysis?.implied_draw_prob,
     away_win: data.market_analysis?.implied_away_prob,
   })[r.pick]
-  const impliedPct = marketImplied != null ? Math.round(marketImplied * 100) : null
+  /* `> 0`, not `!= null`. A real market never prices an outcome at exactly zero,
+   * so a 0 here is always the old "no odds means 0" placeholder rather than a
+   * price — and analyses carrying it are already in caches and in the ledger.
+   * Testing for a positive number is what makes those existing entries render
+   * the honest label too, instead of only matches analysed from now on. */
+  const impliedPct = typeof marketImplied === 'number' && marketImplied > 0
+    ? Math.round(marketImplied * 100) : null
 
   /* If our pick isn't the market's implied favourite, say so — confidently */
   const impliedAll = [
@@ -1753,6 +1961,11 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
     ['draw', data.market_analysis?.implied_draw_prob],
     ['away_win', data.market_analysis?.implied_away_prob],
   ].filter(([, v]) => typeof v === 'number' && v > 0)
+  /* Whether there is a market to talk about at all. Everything downstream that
+   * compares us to the market — the value edge, the takeaway prose, the implied
+   * rows — is gated on this rather than each deciding for itself. */
+  const marketPriced = impliedAll.length > 0
+  const edgeKnown = marketPriced && typeof r.value_edge === 'number'
   const marketFav = impliedAll.length
     ? impliedAll.reduce((a, b) => (b[1] > a[1] ? b : a))
     : null
@@ -1767,14 +1980,13 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
   const scoreline = readScoreline(data)
   const thinScoreData = scoreline?.dataQuality === 'low'
 
+  /* Null when neither goals call came back — the panel then doesn't render at
+   * all, rather than showing an empty shell. */
+  const goals = readGoalsMarkets(data)
+
   const analysedAt = data._ts
     ? new Date(data._ts).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
     : null
-
-  const pickLabels = {
-    over: 'More than 2.5 goals', under: 'Fewer than 2.5 goals',
-    yes: 'Both teams to score', no: 'Not both teams to score',
-  }
 
   return (
     <div style={{ marginTop: 40, display: 'flex', flexDirection: 'column', gap: 22 }}>
@@ -2009,7 +2221,17 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
       <Reveal>
         <Card style={{ padding: 30 }}>
           <Eyebrow>If you were going to act on this</Eyebrow>
-          {edge > 0 && impliedPct != null ? (
+          {/* No prices at all comes first. Without this branch a match with no
+              odds fell through to "the market has this priced about right" —
+              a confident claim about a market we never saw, off the back of a
+              value_edge that was only 0 because nothing was there to compare. */}
+          {!marketPriced ? (
+            <div style={{ ...type.body, marginTop: 12 }}>
+              We couldn't get live prices for this match, so there's no market read to set
+              our own against — no implied probabilities, and no way to say whether there's
+              value here. What's above is our read of the game on its own merits.
+            </div>
+          ) : edge > 0 && impliedPct != null ? (
             <div style={{ ...type.body, marginTop: 12 }}>
               The market prices this outcome at about <strong style={{ fontWeight: 560 }}>{impliedPct}%</strong>; our read makes
               it <strong style={{ fontWeight: 560 }}>{modelPct}%</strong>. That gap — about <strong style={{ color: T.good, fontWeight: 560 }}>{edge} points in your favour</strong> —
@@ -2080,29 +2302,10 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
         </Reveal>
       )}
 
-      {/* OTHER MARKETS */}
-      {data.multiMarket?.length > 0 && (
-        <Reveal>
-          <Card style={{ padding: 30 }}>
-            <Eyebrow>A goals angle, if you prefer</Eyebrow>
-            <div style={{ marginTop: 14, display: 'grid', gap: 14, gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
-              {data.multiMarket.map(m => {
-                const res = m.result || {}
-                const c = Math.round((res.confidence || 0) * 100)
-                return (
-                  <div key={m.key} style={{ background: T.card2, borderRadius: 16, padding: 20 }}>
-                    <div style={{ ...type.small, fontSize: 14, fontWeight: 560, color: T.ink }}>
-                      {pickLabels[res.recommendation] || res.recommendation || '—'}
-                    </div>
-                    <div style={{ ...type.small, color: T.sub, marginTop: 8 }}>{res.reasoning}</div>
-                    <div style={{ ...type.num, fontSize: 12, color: T.faint, marginTop: 10 }}>{c}% confident · {m.label}</div>
-                  </div>
-                )
-              })}
-            </div>
-          </Card>
-        </Reveal>
-      )}
+      {/* OTHER MARKETS — read through readGoalsMarkets, which validates the
+          three nested lines rather than trusting the schema held. Null when no
+          goals call came back at all, in which case nothing is rendered. */}
+      {goals && <GoalsMarketsCard goals={goals} />}
 
       {/* EVERY NUMBER — for the curious, revealed on request */}
       <Reveal>
@@ -2119,10 +2322,15 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
               {[
                 { l: 'Model probability', v: `${modelPct}%` },
                 { l: 'Confidence', v: `${conf}% (${r.confidence_label || '—'})` },
-                { l: 'Value edge vs market', v: `${edge > 0 ? '+' : ''}${edge}%` },
-                { l: 'Implied — home', v: `${Math.round((data.market_analysis?.implied_home_prob || 0) * 100)}%` },
-                { l: 'Implied — draw', v: `${Math.round((data.market_analysis?.implied_draw_prob || 0) * 100)}%` },
-                { l: 'Implied — away', v: `${Math.round((data.market_analysis?.implied_away_prob || 0) * 100)}%` },
+                /* "No odds" rather than a percentage. Each of these is a
+                   comparison against a market price, and printing 0% for a match
+                   we hold no price for reports a market that said something when
+                   none of it ever existed. `impliedCell` treats 0 as absent for
+                   the same reason `impliedPct` does above. */
+                { l: 'Value edge vs market', v: edgeKnown ? `${edge > 0 ? '+' : ''}${edge}%` : 'No odds' },
+                { l: 'Implied — home', v: impliedCell(data.market_analysis?.implied_home_prob) },
+                { l: 'Implied — draw', v: impliedCell(data.market_analysis?.implied_draw_prob) },
+                { l: 'Implied — away', v: impliedCell(data.market_analysis?.implied_away_prob) },
                 { l: 'Full Kelly', v: kelly?.fullPercent != null ? `${kelly.fullPercent}%` : '—' },
                 { l: 'Half Kelly', v: kelly?.halfPercent != null ? `${kelly.halfPercent}%` : '—' },
                 { l: 'Data quality', v: data.data_quality || '—' },
@@ -3412,8 +3620,18 @@ function RecordScreen({
     .sort((a, b) => (a.a.resolvedAt || 0) - (b.a.resolvedAt || 0))
     .slice(-10)
 
-  const edges = entries.map(e => e.a.recommendation?.value_edge || 0)
+  /* Only verdicts that actually had a market to be priced against.
+   *
+   * This was `value_edge || 0` across every entry, which folded each no-odds
+   * match into the average as a real zero-edge reading and dragged the figure
+   * towards nothing in proportion to how many matches we simply had no prices
+   * for. An average of the edges we measured is a different and honest number;
+   * an average that includes the ones we couldn't measure is not. */
+  const edges = entries
+    .map(e => e.a.recommendation?.value_edge)
+    .filter(v => typeof v === 'number')
   const avgEdge = edges.length ? edges.reduce((s, x) => s + x, 0) / edges.length : 0
+  const edgesUnpriced = entries.length - edges.length
 
   /* Calibration comes from the ledger via getCalibration(), not from
    * analysisCache — the ledger is the permanent, server-side record and survives
@@ -3491,6 +3709,15 @@ function RecordScreen({
                 color: avgEdge > 0 ? T.good : avgEdge < 0 ? T.bad : T.ink }}>
                 {edges.length ? `${avgEdge >= 0 ? '+' : ''}${avgEdge.toFixed(1)}` : '—'}
               </div>
+              {/* Says what the average is actually over, rather than letting it
+                  read as covering every verdict written. */}
+              {edgesUnpriced > 0 && (
+                <div style={{ ...type.small, fontSize: 12, color: T.faint, marginTop: 6 }}>
+                  {edges.length
+                    ? `across ${edges.length} priced ${edges.length === 1 ? 'match' : 'matches'}; ${edgesUnpriced} had no odds`
+                    : 'no odds on any of these'}
+                </div>
+              )}
             </div>
           </div>
 
@@ -5810,10 +6037,22 @@ function MatchIQ({ user, username, onUsernameChange }) {
         console.error('[groq] synthesis returned JSON with no usable recommendation — not cached')
         throw new Error(ANALYSIS_INCOMPLETE_MESSAGE)
       }
-      // Guard the one number the model is most prone to inventing: with no odds
-      // there is no market probability to compare against, so there is no edge.
+      /* Guard the numbers the model is most prone to inventing: with no odds
+       * there is no market probability to compare against.
+       *
+       * These are forced to null, not 0. Zero is a finding — "we compared our
+       * read against the market and found no gap" — and writing it here stated
+       * that finding for matches where no comparison ever happened. Downstream
+       * both spellings are treated the same by the `|| 0` sorts, but the UI can
+       * only tell the reader "no prices for this one" if the absence survives
+       * to it, and 0 destroys that distinction at the point of writing. */
       if (parsed.recommendation && fx.odds?.home == null) {
-        parsed.recommendation.value_edge = 0
+        parsed.recommendation.value_edge = null
+        if (parsed.market_analysis) {
+          parsed.market_analysis.implied_home_prob = null
+          parsed.market_analysis.implied_draw_prob = null
+          parsed.market_analysis.implied_away_prob = null
+        }
       }
       parsed._ts = Date.now()
       /* The exact articles that went into the prompt, carried on the analysis so

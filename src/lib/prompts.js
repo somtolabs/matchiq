@@ -51,7 +51,7 @@ OUTPUT RULES
 3. reasoning: minimum 4 sentences, tracing the weighing-up — not a summary of the pick.
 4. key_factors: concrete and specific, citing the actual numbers given. Never "home advantage matters".
 5. model_probability: genuine probabilistic reasoning, not confidence restated.
-6. value_edge: integer, (model_probability * 100) minus the market implied probability. No odds means 0.
+6. value_edge: integer, (model_probability * 100) minus the market implied probability. If no odds were given for this match, return null — NOT 0. Zero means "we compared our read against the market's price and found no gap", which is a real finding; with no price there was no comparison to make, and reporting 0 would state that finding falsely. The same applies to implied_home_prob, implied_draw_prob and implied_away_prob: return null for all three when no odds are given, never 0.00.
 7. Never write "data unavailable" in a prose field — reason from what IS present and lower data_quality.
 
 REASONING STANDARD
@@ -63,7 +63,7 @@ Reason from what you have: goals for and against, home/away splits, whether the 
 
 MARKET ANALYSIS
 With odds: compute implied probabilities, strip the overround, name the outcome the market underweights, and read the line movement if given.
-Without odds: work from form and matchup alone and set data_quality to "low".
+Without odds: work from form and matchup alone and set data_quality to "low". Return null for implied_home_prob, implied_draw_prob, implied_away_prob and value_edge — there is no price to derive them from, and a 0.00 would be read as a real market probability of zero. Say plainly in market_signal that no prices were available for this match rather than describing the market at all.
 
 JSON SCHEMA (every field required, produced in this order):
 {
@@ -319,6 +319,60 @@ There is no injury list, no suspension list and no confirmed lineup here. None i
 Respond with the JSON schema only.`
 }
 
+/* The Over/Under agent's own system prompt, separate from MARKET_SYSTEM_PROMPT.
+ *
+ * Its schema is genuinely different — three nested lines in one response rather
+ * than a single verdict — and the house rule is that each agent gets its own
+ * prompt rather than a shared one bent to fit both.
+ *
+ * Two things this schema does deliberately:
+ *
+ * `over_probability` is always the probability of going OVER that line, never
+ * "the probability of whatever I recommended". A field that flips meaning with
+ * the verdict cannot be compared across the three lines, which would make the
+ * nesting rule below unverifiable — the check would be comparing P(over 1.5)
+ * against P(under 3.5) and calling the result a violation. One fixed meaning is
+ * what makes the arithmetic checkable at all.
+ *
+ * And the nesting is stated as arithmetic rather than as a style note, because
+ * it is: every match with 4 goals also has more than 2, so P(over 1.5) can never
+ * be below P(over 2.5). The model is told this is a hard constraint, and the code
+ * verifies it anyway — see readGoalsMarkets. */
+export const OVER_UNDER_SYSTEM_PROMPT = `You are a football betting market analyst specializing in total-goals markets.
+Respond ONLY with valid JSON. No markdown, no code fences, no prose.
+
+You do not have access to injury reports or team news. Do not speculate about specific players, injuries, or lineup changes. Reason only from the goals, form, standings, head-to-head and market data provided.
+
+Never describe data as missing unless the brief explicitly says so for that specific team and source. The brief names what is unavailable; anything it does not name is present, and you must reason from it rather than claiming an absence.
+
+You must price THREE separate lines: 1.5, 2.5 and 3.5 total goals.
+
+HARD RULES — a response breaking any of these is invalid:
+1. \`over_probability\` is ALWAYS the probability that the match goes OVER that line, regardless of which side you recommend. Never report the probability of your own verdict.
+2. These outcomes are strictly nested: every match that goes over 3.5 also goes over 2.5, and every match over 2.5 also goes over 1.5. Therefore over_probability MUST decrease (or stay equal) as the line rises: P(over 1.5) >= P(over 2.5) >= P(over 3.5). Derive the three from one view of the goal distribution so they cannot contradict each other.
+3. Reason each line INDEPENDENTLY on its merits. 1.5 is a question about whether this is a low-scoring or goalless game; 2.5 about whether it is an average or open one; 3.5 about whether it is a genuine goal fest. Do not restate the same argument three times — each \`reasoning\` must be about its own line, and the recommendations may well differ across lines.
+4. \`expected_total_goals\` must be consistent with your three probabilities and with the predicted scoreline you are given: if you are told the likeliest score is 2-1, expected_total_goals should be near 3 and P(over 2.5) should be above 0.5.
+5. Where the data does not clearly favour one side of a line, say so and set that line's confidence below 0.55 rather than forcing a confident call.
+
+Schema:
+{
+  "thresholds": [
+    {
+      "line": 1.5,
+      "recommendation": "over" | "under",
+      "over_probability": 0.00,
+      "reasoning": "2-3 sentences about THIS line specifically",
+      "key_factors": ["factor 1", "factor 2"],
+      "confidence": 0.00,
+      "confidence_label": "low | medium | medium-high | high"
+    },
+    { "line": 2.5, "recommendation": "over" | "under", "over_probability": 0.00, "reasoning": "...", "key_factors": ["..."], "confidence": 0.00, "confidence_label": "..." },
+    { "line": 3.5, "recommendation": "over" | "under", "over_probability": 0.00, "reasoning": "...", "key_factors": ["..."], "confidence": 0.00, "confidence_label": "..." }
+  ],
+  "expected_total_goals": 0.0,
+  "consistency_note": "one sentence on how the three lines and the expected total fit together"
+}`
+
 export const MARKET_SYSTEM_PROMPT = `You are a football betting market analyst specializing in goals markets.
 Respond ONLY with valid JSON. No markdown, no code fences, no prose.
 
@@ -399,10 +453,31 @@ function matchOddsLine(f) {
   return `Home ${f.odds.home} | Draw ${f.odds.draw} | Away ${f.odds.away}`
 }
 
+/* The scoreline the synthesis call already produced, restated for the goals
+ * agent. Without it the two panels are two unrelated reads of the same match and
+ * can contradict each other in the reader's face — a 2-1 headline score sitting
+ * beside "under 2.5 goals". Passing it in is what makes rule 4 checkable by the
+ * model itself, and it costs about 30 prompt tokens. Silent when the analysis
+ * predates the scoreline field, so nothing is invented. */
+function scorelineContextLine(main) {
+  const sl = main?.scoreline
+  const most = sl?.most_likely
+  if (!most || typeof most.home !== 'number' || typeof most.away !== 'number') return ''
+  const xg = sl.expected_goals
+  const xgStr = xg && typeof xg.home === 'number' && typeof xg.away === 'number'
+    ? ` Expected goals: ${xg.home.toFixed(2)}-${xg.away.toFixed(2)} (total ${(xg.home + xg.away).toFixed(2)}).`
+    : ''
+  const alts = (Array.isArray(sl.alternatives) ? sl.alternatives : [])
+    .filter(s => typeof s?.home === 'number' && typeof s?.away === 'number')
+    .map(s => `${s.home}-${s.away}`)
+  return `\nPREDICTED SCORELINE (from the main read — your lines must be consistent with this)
+Likeliest score: ${most.home}-${most.away} (total ${most.home + most.away} goals).${xgStr}${alts.length ? ` Other likely scores: ${alts.join(', ')}.` : ''}\n`
+}
+
 export function buildOverUnderPrompt(f, main, context = {}) {
   const standings = context.standings || null
   const formStr = (arr) => Array.isArray(arr) && arr.length ? arr.join(' ') : 'recent match log not available'
-  return `MARKET: OVER/UNDER 2.5 GOALS
+  return `MARKET: TOTAL GOALS — OVER/UNDER 1.5, 2.5 AND 3.5
 
 FIXTURE
 ${f.homeTeam} vs ${f.awayTeam} — ${f.competition}
@@ -425,8 +500,8 @@ ${matchOddsLine(f)}
 
 MAIN ANALYSIS CONTEXT
 Pick: ${main?.recommendation?.pick || 'unknown'} at ${Math.round((main?.recommendation?.confidence || 0) * 100)}% confidence
-
-Predict whether total goals will be OVER or UNDER 2.5. Respond with the JSON schema exactly.`
+${scorelineContextLine(main)}
+Price all three lines — 1.5, 2.5 and 3.5 total goals. Reason each one on its own merits, keep the three over_probability values in non-increasing order as the line rises, and keep them consistent with the predicted scoreline above. Respond with the JSON schema exactly.`
 }
 
 export function buildBTTSPrompt(f, main, context = {}) {
@@ -455,6 +530,8 @@ ${matchOddsLine(f)}
 
 MAIN ANALYSIS CONTEXT
 Pick: ${main?.recommendation?.pick || 'unknown'} at ${Math.round((main?.recommendation?.confidence || 0) * 100)}% confidence
+${scorelineContextLine(main)}
+Predict whether BOTH teams will score (YES) or not (NO). Your call must be consistent with the predicted scoreline above — a likeliest score with a nil in it points to NO, and one where both sides score points to YES. If you disagree with that score, say why in your reasoning rather than ignoring it.
 
-Predict whether BOTH teams will score (YES) or not (NO). Respond with the JSON schema exactly.`
+\`model_probability\` must be the probability that both teams DO score, whichever way you recommend. Respond with the JSON schema exactly.`
 }

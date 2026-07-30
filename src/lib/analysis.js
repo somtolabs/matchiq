@@ -5,6 +5,7 @@ import { GROQ_MODEL, GROQ_ENDPOINT, AGENT_PARAMS, extractFirstJsonObject } from 
 import { settlementScore, matchScore } from './football.js'
 import {
   MARKET_SYSTEM_PROMPT,
+  OVER_UNDER_SYSTEM_PROMPT,
   buildOverUnderPrompt,
   buildBTTSPrompt,
 } from './prompts.js'
@@ -41,9 +42,42 @@ export function calculateKelly(analysis, fixture) {
  * It is passed in rather than fetched: the caller already holds it, and these
  * agents must reason from exactly the data the main read used, not a subset. */
 export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}) {
+  /* Still exactly two calls, so a full analysis remains three in total.
+   *
+   * The three Over/Under lines share ONE call rather than getting one each. That
+   * is not only about the token budget (though adding two more calls would not
+   * fit — see the reservation arithmetic below): 1.5, 2.5 and 3.5 are strictly
+   * nested outcomes, so they have to come out of a single view of the goal
+   * distribution or they contradict each other. Three independent calls would
+   * each reason from scratch and routinely return P(over 1.5) below P(over 2.5),
+   * which is arithmetically impossible and would leave the validator rejecting
+   * most responses. Reasoned together, the constraint is one the model can
+   * actually hold.
+   *
+   * BTTS keeps its own call because it is a different question — how the goals
+   * are split between the two sides, not how many there are. A 3-0 and a 2-1
+   * are the same total-goals answer and opposite BTTS answers, so folding it in
+   * would have one brief pulling in two directions. */
   const markets = [
-    { key: 'over_under', label: 'Over/Under 2.5 Goals', prompt: buildOverUnderPrompt(fixture, mainAnalysis, context) },
-    { key: 'btts', label: 'Both Teams to Score', prompt: buildBTTSPrompt(fixture, mainAnalysis, context) },
+    {
+      key: 'over_under',
+      label: 'Total goals — 1.5, 2.5, 3.5',
+      system: OVER_UNDER_SYSTEM_PROMPT,
+      prompt: buildOverUnderPrompt(fixture, mainAnalysis, context),
+      /* Raised from the shared 1,800 because this response is now three reasoned
+       * blocks instead of one. Reserved cost becomes ~700 prompt + 2,600 =
+       * 3,300, and with BTTS unchanged at ~2,474 the pair sits at 5,774 of the
+       * 8,000-per-minute ceiling they share in the second window — still ~2,200
+       * spare, so the stagger below does not need to change. */
+      params: { ...AGENT_PARAMS, max_tokens: 2600 },
+    },
+    {
+      key: 'btts',
+      label: 'Both Teams to Score',
+      system: MARKET_SYSTEM_PROMPT,
+      prompt: buildBTTSPrompt(fixture, mainAnalysis, context),
+      params: AGENT_PARAMS,
+    },
   ]
   /* Staggered rather than parallel. The main read has just spent most of the
    * account's 8,000 tokens-per-minute allowance, so firing both of these
@@ -94,15 +128,20 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
       body: JSON.stringify({
         model: GROQ_MODEL,
         messages: [
-          { role: 'system', content: MARKET_SYSTEM_PROMPT },
+          { role: 'system', content: market.system },
           { role: 'user', content: market.prompt },
         ],
         response_format: { type: 'json_object' },
-        ...AGENT_PARAMS,
+        ...market.params,
       }),
     })
     const data = await res.json()
     if (data.error) throw new Error(data.error.message || 'groq rejected the market call')
+    /* Logged because the reservation arithmetic above is only as good as its
+     * inputs, and those were estimates until a real call reported them. Makes
+     * the next person's budget decision measurable rather than inherited. */
+    const u = data.usage || {}
+    console.log(`[groq] ${market.key}: prompt ${u.prompt_tokens ?? '?'} + completion ${u.completion_tokens ?? '?'} = ${u.total_tokens ?? '?'} tokens · reserved ${(u.prompt_tokens ?? 0) + (market.params.max_tokens || 0)} against the 8,000/min ceiling · finish: ${data.choices?.[0]?.finish_reason ?? '?'}`)
     const parsed = extractFirstJsonObject(data.choices?.[0]?.message?.content)
     return { key: market.key, label: market.label, result: parsed }
   }))
@@ -176,6 +215,157 @@ export function readScoreline(analysis) {
     // Carried through so the UI can caveat a thin-data prediction without
     // reaching back into the recommendation for it.
     dataQuality: analysis?.recommendation?.data_quality || null,
+  }
+}
+
+/* ---------- the goals markets: three nested lines plus BTTS ----------
+ *
+ * Same posture as readScoreline: refuse to render anything that isn't a real,
+ * coherent prediction, and compute the agreements rather than trusting the
+ * prompt's word that they hold.
+ *
+ * The nesting rule is the substance here. P(over 1.5) >= P(over 2.5) >=
+ * P(over 3.5) is not a preference, it is arithmetic — the over-3.5 matches are a
+ * subset of the over-2.5 matches, which are a subset of the over-1.5 ones. A
+ * response violating it has not given three prices, it has given three numbers
+ * that cannot all describe the same match.
+ *
+ * It is FLAGGED, not silently repaired. Repairing would mean inventing
+ * probabilities the model didn't produce and presenting them as its read, and
+ * there is no honest way to choose which of the three numbers was the wrong one.
+ * The same call this codebase already makes for a scoreline that contradicts its
+ * own pick: surface the disagreement, let the reader weigh it. `coherent` is
+ * what the UI keys the warning on, and the numbers shown are always the ones the
+ * model actually returned.
+ *
+ * `over_probability` is read as the probability of going OVER that line, which
+ * is what the system prompt fixes it to mean — that single fixed direction is
+ * what makes the comparison legitimate. */
+const LINES = [1.5, 2.5, 3.5]
+
+function cleanThreshold(t) {
+  if (!t || typeof t !== 'object') return null
+  const line = typeof t.line === 'number' ? t.line : parseFloat(t.line)
+  if (!LINES.includes(line)) return null
+  const p = asProb(t.over_probability)
+  if (p == null) return null
+  const rec = t.recommendation === 'over' || t.recommendation === 'under' ? t.recommendation : null
+  if (!rec) return null
+  return {
+    line,
+    recommendation: rec,
+    overProbability: p,
+    reasoning: typeof t.reasoning === 'string' && t.reasoning.trim() ? t.reasoning.trim() : null,
+    keyFactors: Array.isArray(t.key_factors) ? t.key_factors.filter(x => typeof x === 'string' && x.trim()) : [],
+    confidence: asProb(t.confidence),
+    confidenceLabel: typeof t.confidence_label === 'string' ? t.confidence_label : null,
+    /* The model may recommend either side of a line; whether that recommendation
+     * agrees with its own probability is checkable, and a mismatch (recommending
+     * "over" at a 38% chance of going over) is a real contradiction worth
+     * showing rather than quietly rendering. */
+    recommendationMatchesProb: rec === 'over' ? p >= 0.5 : p < 0.5,
+  }
+}
+
+export function readGoalsMarkets(analysis) {
+  const entries = Array.isArray(analysis?.multiMarket) ? analysis.multiMarket : []
+  const ou = entries.find(m => m?.key === 'over_under')?.result
+  const bttsRaw = entries.find(m => m?.key === 'btts')?.result
+
+  const thresholds = (Array.isArray(ou?.thresholds) ? ou.thresholds : [])
+    .map(cleanThreshold)
+    .filter(Boolean)
+    // One entry per line, lowest first — a duplicated line would break nesting.
+    .filter((t, i, arr) => arr.findIndex(x => x.line === t.line) === i)
+    .sort((a, b) => a.line - b.line)
+
+  /* ---- the nesting check (Part 4) ---- */
+  const violations = []
+  for (let i = 1; i < thresholds.length; i++) {
+    const lo = thresholds[i - 1]
+    const hi = thresholds[i]
+    if (hi.overProbability > lo.overProbability) {
+      violations.push(
+        `over ${hi.line} is priced at ${Math.round(hi.overProbability * 100)}%, above over ${lo.line} at ${Math.round(lo.overProbability * 100)}% — impossible, since every match over ${hi.line} is also over ${lo.line}`
+      )
+    }
+  }
+  const coherent = violations.length === 0
+  // All three lines are what the feature promises; fewer means a partial answer.
+  const complete = thresholds.length === LINES.length
+
+  const expectedTotal = (typeof ou?.expected_total_goals === 'number'
+    && Number.isFinite(ou.expected_total_goals)
+    && ou.expected_total_goals >= 0 && ou.expected_total_goals <= 12)
+    ? ou.expected_total_goals
+    : null
+
+  /* ---- consistency with the shipped scoreline ---- */
+  const sl = readScoreline(analysis)
+  const scorelineTotal = sl ? sl.most.home + sl.most.away : null
+  const line25 = thresholds.find(t => t.line === 2.5)
+  // The modal score's total and the 2.5 line must point the same way: a 2-1
+  // (total 3) alongside "under 2.5" is the contradiction worth catching.
+  const agreesWithScoreline = (scorelineTotal == null || !line25)
+    ? true
+    : scorelineTotal > 2.5 ? line25.overProbability >= 0.5 : line25.overProbability < 0.5
+
+  /* Every analysis cached before the three-line schema shipped holds the old
+   * single-verdict shape: one over/under call on 2.5 with `model_probability`
+   * meaning "probability of what I recommended", not a fixed over-direction.
+   *
+   * Those cannot be folded into `thresholds` — the direction is not fixed, so
+   * comparing them against a real over_probability would be comparing two
+   * different quantities, which is the exact mistake the fixed direction exists
+   * to prevent. They are carried separately and labelled as the older read, so a
+   * cached analysis keeps the goals angle it was written with instead of the
+   * panel silently losing it. */
+  const legacyRec = (!thresholds.length && (ou?.recommendation === 'over' || ou?.recommendation === 'under'))
+    ? ou.recommendation : null
+  const legacy = legacyRec ? {
+    recommendation: legacyRec,
+    // Probability OF THE RECOMMENDATION, which is what the old schema meant.
+    probability: asProb(ou.model_probability),
+    reasoning: typeof ou.reasoning === 'string' && ou.reasoning.trim() ? ou.reasoning.trim() : null,
+    keyFactors: Array.isArray(ou.key_factors) ? ou.key_factors.filter(x => typeof x === 'string' && x.trim()) : [],
+    confidence: asProb(ou.confidence),
+    confidenceLabel: typeof ou.confidence_label === 'string' ? ou.confidence_label : null,
+  } : null
+
+  const bttsProb = asProb(bttsRaw?.model_probability)
+  const bttsRec = bttsRaw?.recommendation === 'yes' || bttsRaw?.recommendation === 'no'
+    ? bttsRaw.recommendation : null
+  const btts = bttsRec ? {
+    recommendation: bttsRec,
+    probability: bttsProb,
+    reasoning: typeof bttsRaw.reasoning === 'string' && bttsRaw.reasoning.trim() ? bttsRaw.reasoning.trim() : null,
+    keyFactors: Array.isArray(bttsRaw.key_factors) ? bttsRaw.key_factors.filter(x => typeof x === 'string' && x.trim()) : [],
+    confidence: asProb(bttsRaw.confidence),
+    confidenceLabel: typeof bttsRaw.confidence_label === 'string' ? bttsRaw.confidence_label : null,
+    // Both teams scoring is impossible in a scoreline containing a nil, so the
+    // modal score settles this one outright.
+    agreesWithScoreline: sl == null ? true
+      : (sl.most.home > 0 && sl.most.away > 0) === (bttsRec === 'yes'),
+  } : null
+
+  // Nothing honest to show — no goals call of either generation came back.
+  if (!thresholds.length && !btts && !legacy) return null
+
+  return {
+    thresholds,
+    legacy,
+    btts,
+    expectedTotal,
+    coherent,
+    violations,
+    complete,
+    agreesWithScoreline,
+    scorelineTotal,
+    consistencyNote: typeof ou?.consistency_note === 'string' && ou.consistency_note.trim()
+      ? ou.consistency_note.trim() : null,
+    // Same caveat source the scoreline panel uses, so both say "thin data" on
+    // exactly the same evidence rather than each deciding for itself.
+    dataQuality: analysis?.recommendation?.data_quality || analysis?.data_quality || null,
   }
 }
 
