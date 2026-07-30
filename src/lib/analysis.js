@@ -82,36 +82,30 @@ export async function runMultiMarketAnalysis(fixture, mainAnalysis, context = {}
       params: AGENT_PARAMS,
     },
   ]
-  /* Staggered at 70s and 100s, and both market calls fire in the minute AFTER
-   * the synthesis call rather than alongside it.
+  /* Both market calls fire together, immediately, the moment the verdict lands.
    *
-   * The binding constraint is the account's 8,000 tokens-per-minute ceiling, and
-   * Groq counts prompt + max_tokens against it up front. That reservation model
-   * is measured, not assumed: firing these calls live, one was rejected at a
-   * cumulative 8,033 ("429 … Limit 8000, Used 4143, Requested 3890") and another
-   * at 10,578 — so the full max_tokens really is reserved, correcting an earlier
-   * note here that guessed Groq under-reserves.
+   * They used to be staggered to 70s and 100s. That was correct FOR GROQ and
+   * only for Groq: Groq's on-demand tier capped this model at 8,000 tokens per
+   * minute and counted prompt + max_tokens up front, so synthesis (~7,600
+   * reserved) all but filled its own minute and the two market calls had to wait
+   * for the next one — 70s/100s cleared the rolling window with a cushion.
    *
-   * Worst-case reservations (prompt + max_tokens), all measured live:
-   *   synthesis    ~3,400 + 4,200 = 7,600   → leaves only ~400 in its own minute
-   *   over_under    1,290 + 1,800 = 3,090
-   *   btts            807 + 1,800 = 2,607
-   *
-   * Synthesis alone nearly fills its minute, so neither market call can share it.
-   * The first waits until 70s — clear of synthesis's rolling-60s window with a
-   * 10s cushion that also survives the single synthesis retry (fired a few
-   * seconds in, its window closes by ~63s). In the second window the two market
-   * calls total 3,090 + 2,607 = 5,697, well under 8,000, so 70s/100s carries both
-   * with ~2,300 to spare. They are background enrichment behind an already-
-   * rendered verdict, so the wait costs the reader nothing while a 429 would cost
-   * them the panel — the stagger is correctly sized and stays. */
-  const results = await Promise.allSettled(markets.map(async (market, i) => {
-    await new Promise(r => setTimeout(r, 70000 + i * 30000))
+   * The pipeline is on Cerebras now, and that ceiling does not exist here. All
+   * three calls were fired at the same instant against the live endpoint and all
+   * three returned 200 (synthesis, over_under and btts — no 429, no throttling).
+   * The 100-second wait was therefore doing nothing but keeping the goals markets
+   * — over/under, and BTTS worst of all as the later timer — off the screen for
+   * the better part of two minutes, long enough that in a normal session they
+   * never appeared at all. That delay, not any data or rendering fault, is why
+   * BTTS looked broken after the migration. Removing the stagger is what makes it
+   * show. They stay background (fired after the verdict renders), so a re-run
+   * guard still prevents a double fire, but there is no reason to hold them back
+   * a provider-specific limit no longer imposes. */
+  const results = await Promise.allSettled(markets.map(async (market) => {
     // Through the same-origin proxy — no auth header, the key is attached
-    // server-side. The stagger is kept exactly as it was: it is a
-    // rate-limit guard sized to a provider's per-minute ceiling, and holding
-    // these background calls back one minute behind an already-rendered verdict
-    // costs the reader nothing, so it stays as a conservative safety margin.
+    // server-side. No stagger: Cerebras has no per-minute token ceiling to sit
+    // inside (verified — three concurrent calls all returned 200), so both fire
+    // at once and the goals panel appears seconds behind the verdict.
     const res = await fetch(LLM_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -357,6 +351,114 @@ export function readGoalsMarkets(analysis) {
     // exactly the same evidence rather than each deciding for itself.
     dataQuality: analysis?.recommendation?.data_quality || analysis?.data_quality || null,
   }
+}
+
+/* ---------- Double Chance and Draw No Bet (display-only, no new call) ----------
+ *
+ * Pure arithmetic over the 1X2 probabilities the synthesis already produced. The
+ * source is the market-implied home/draw/away triple; it is normalised to sum to
+ * 1 first, so the bookmaker's overround (the reason three implied probabilities
+ * add up to more than 100%) doesn't inflate the combined figures. Every number
+ * returned is a real probability, not an invented one.
+ *
+ * Double Chance covers two of the three results: 1X = home or draw, X2 = draw or
+ * away, 12 = home or away. Draw No Bet removes the draw entirely and renormalises
+ * what's left between the two sides — a stake returned if it ends level.
+ *
+ * Returns null when the triple isn't all present (a fixture with no odds carries
+ * null implied probabilities), so the panel simply doesn't render rather than
+ * showing numbers with nothing behind them. */
+export function deriveMatchOddsMarkets(analysis) {
+  const m = analysis?.market_analysis
+  const h = asProb(m?.implied_home_prob)
+  const d = asProb(m?.implied_draw_prob)
+  const a = asProb(m?.implied_away_prob)
+  if (h == null || d == null || a == null) return null
+  const total = h + d + a
+  if (!(total > 0)) return null
+  const H = h / total, D = d / total, A = a / total
+  return {
+    probs: { home: H, draw: D, away: A },
+    doubleChance: { homeOrDraw: H + D, homeOrAway: H + A, drawOrAway: D + A },
+    drawNoBet: { home: H / (H + A), away: A / (H + A) },
+  }
+}
+
+const PICK_LABEL = { home_win: 'Home win', draw: 'Draw', away_win: 'Away win' }
+
+/* ---------- Safest Bet: a genuine cross-market scan (display-only) ----------
+ *
+ * Scans every market this fixture has ALREADY had computed — the three straight
+ * 1X2 outcomes, Double Chance, Draw No Bet, all three Over/Under lines (2.5
+ * included) and Both Teams to Score — and returns the single option with the
+ * highest real probability, provided it clears the same 50% honesty floor the
+ * main pick uses. No new model call, no invented numbers: every probability was
+ * produced above, and every reason is lifted from the reasoning the model
+ * already wrote for that market.
+ *
+ * Each market contributes its MORE-LIKELY side (over vs under, both-score vs not)
+ * so the figure is always a real probability of the thing named. One consequence
+ * is worth stating plainly: whenever a full odds triple exists, Double Chance
+ * always offers an option above ~0.67 (it covers two of three results), so the
+ * scan will clear the floor. "Nothing clears it" is therefore the honest verdict
+ * of a thin fixture — no odds, and no goals markets computed yet — where all we
+ * hold is a sub-50% read. In that case it says so instead of forcing a pick. */
+const SAFE_BET_FLOOR = 0.5
+
+export function safestBet(analysis) {
+  const goals = readGoalsMarkets(analysis)
+  const odds = deriveMatchOddsMarkets(analysis)
+  const rec = analysis?.recommendation
+  const pick = rec?.pick
+  const recReason = typeof rec?.reasoning === 'string' && rec.reasoning.trim() ? rec.reasoning.trim() : null
+  const marketSignal = typeof analysis?.market_analysis?.market_signal === 'string' && analysis.market_analysis.market_signal.trim()
+    ? analysis.market_analysis.market_signal.trim() : null
+
+  const c = [] // { label, prob, reason }
+
+  if (odds) {
+    const { home, draw, away } = odds.probs
+    // Straight 1X2 — the pick outcome carries the verdict's own reasoning.
+    c.push({ label: 'Home win', prob: home, reason: pick === 'home_win' ? recReason : marketSignal })
+    c.push({ label: 'Draw', prob: draw, reason: pick === 'draw' ? recReason : marketSignal })
+    c.push({ label: 'Away win', prob: away, reason: pick === 'away_win' ? recReason : marketSignal })
+    // Double Chance and Draw No Bet — the 1X2 market's own read fits all of them.
+    c.push({ label: 'Home or draw (double chance)', prob: odds.doubleChance.homeOrDraw, reason: marketSignal })
+    c.push({ label: 'Home or away (double chance)', prob: odds.doubleChance.homeOrAway, reason: marketSignal })
+    c.push({ label: 'Draw or away (double chance)', prob: odds.doubleChance.drawOrAway, reason: marketSignal })
+    c.push({ label: 'Home, draw no bet', prob: odds.drawNoBet.home, reason: marketSignal })
+    c.push({ label: 'Away, draw no bet', prob: odds.drawNoBet.away, reason: marketSignal })
+  } else {
+    // No odds triple — the only 1X2-family figure available is the model's
+    // probability for its own pick.
+    const mp = asProb(rec?.model_probability)
+    if (mp != null && PICK_LABEL[pick]) c.push({ label: PICK_LABEL[pick], prob: mp, reason: recReason })
+  }
+
+  if (goals) {
+    for (const t of goals.thresholds) {
+      const overSide = t.overProbability >= 0.5
+      c.push({
+        label: `${overSide ? 'Over' : 'Under'} ${t.line} goals`,
+        prob: overSide ? t.overProbability : 1 - t.overProbability,
+        reason: t.reasoning,
+      })
+    }
+    if (goals.btts && goals.btts.probability != null) {
+      const yes = goals.btts.probability >= 0.5
+      c.push({
+        label: yes ? 'Both teams to score' : 'Not both teams to score',
+        prob: yes ? goals.btts.probability : 1 - goals.btts.probability,
+        reason: goals.btts.reasoning,
+      })
+    }
+  }
+
+  const cleared = c.filter(x => typeof x.prob === 'number' && Number.isFinite(x.prob) && x.prob >= SAFE_BET_FLOOR)
+  if (!cleared.length) return { none: true, scanned: c.length }
+  cleared.sort((a, b) => b.prob - a.prob)
+  const best = cleared[0]
+  return { none: false, label: best.label, probability: best.prob, reason: best.reason || null, scanned: c.length }
 }
 
 /* ---------- is this stored analysis renderable? ----------

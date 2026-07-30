@@ -22,7 +22,7 @@ import {
 import {
   calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve, countsTowardRecord,
   edgeToOutcome, AGENT_PERF_EMPTY, hasVerdict, isCompleteVerdict, sanitizeAnalysisCache, readScoreline,
-  readGoalsMarkets,
+  readGoalsMarkets, deriveMatchOddsMarkets, safestBet,
 } from './lib/analysis.js'
 import {
   lookupOddsForFixture, sportKeysForFixtures, readOddsStore, writeOddsStore, nameScore,
@@ -2049,6 +2049,89 @@ function GoalsMarketsCard({ goals }) {
   )
 }
 
+/* Double Chance and Draw No Bet — derived in deriveMatchOddsMarkets purely from
+ * the 1X2 probabilities the model already produced, no extra call. Labelled with
+ * the actual team names and a plain one-line explanation of each, because these
+ * two markets are exactly the ones a newer bettor hasn't met yet. */
+function MatchOddsMarketsCard({ markets, fx }) {
+  const pct = (x) => `${Math.round(x * 100)}%`
+  const row = (label, value, sub) => (
+    <div style={{ background: T.card2, borderRadius: 14, padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+      <div>
+        <div style={{ ...type.small, fontSize: 14, fontWeight: 560, color: T.ink }}>{label}</div>
+        {sub && <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 3 }}>{sub}</div>}
+      </div>
+      <div style={{ ...type.num, fontSize: 16, color: T.ink, fontWeight: 560 }}>{value}</div>
+    </div>
+  )
+  const dc = markets.doubleChance
+  const dnb = markets.drawNoBet
+  return (
+    <Reveal>
+      <Card style={{ padding: 30 }}>
+        <Eyebrow>Safer ways to back it</Eyebrow>
+        <div style={{ ...type.small, fontSize: 14.5, color: T.sub, marginTop: 12 }}>
+          Two lower-risk markets, worked out from the same odds. <strong style={{ color: T.ink, fontWeight: 560 }}>Double chance</strong> covers
+          two of the three results in one bet; <strong style={{ color: T.ink, fontWeight: 560 }}>draw no bet</strong> hands
+          your stake back if it finishes level.
+        </div>
+
+        <div style={{ ...type.small, fontSize: 12.5, fontWeight: 600, color: T.faint, letterSpacing: 0.4, textTransform: 'uppercase', marginTop: 20, marginBottom: 10 }}>Double chance</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {row(`${fx.homeTeam} or draw`, pct(dc.homeOrDraw), 'Wins if the home side wins or it ends level')}
+          {row(`${fx.awayTeam} or draw`, pct(dc.drawOrAway), 'Wins if the away side wins or it ends level')}
+          {row(`${fx.homeTeam} or ${fx.awayTeam}`, pct(dc.homeOrAway), 'Wins as long as it isn\'t a draw')}
+        </div>
+
+        <div style={{ ...type.small, fontSize: 12.5, fontWeight: 600, color: T.faint, letterSpacing: 0.4, textTransform: 'uppercase', marginTop: 22, marginBottom: 10 }}>Draw no bet</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {row(`${fx.homeTeam}`, pct(dnb.home), 'Stake returned if it\'s a draw')}
+          {row(`${fx.awayTeam}`, pct(dnb.away), 'Stake returned if it\'s a draw')}
+        </div>
+      </Card>
+    </Reveal>
+  )
+}
+
+/* Safest Bet — the single highest-probability option across every market already
+ * computed for this fixture (1X2, double chance, draw no bet, all three O/U lines
+ * and BTTS), gated by the same 50% floor the main pick uses. safestBet does the
+ * scan; this only renders it, and says so honestly when nothing clears the bar. */
+function SafestBetCard({ safest }) {
+  if (safest.none) {
+    return (
+      <Reveal>
+        <Card style={{ padding: 30 }}>
+          <Eyebrow>Safest bet</Eyebrow>
+          <div style={{ ...type.small, fontSize: 15, color: T.sub, marginTop: 12 }}>
+            Nothing here clears our even-money bar. Across every market we priced, no single
+            option is more likely than not — this one is genuinely too open to call safe.
+          </div>
+        </Card>
+      </Reveal>
+    )
+  }
+  const pct = Math.round(safest.probability * 100)
+  return (
+    <Reveal>
+      <Card style={{ padding: 30 }}>
+        <Eyebrow>Safest bet</Eyebrow>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 14, flexWrap: 'wrap' }}>
+          <ConfidenceDot pct={pct} size={9} />
+          <span style={{ ...type.display, fontSize: 26, color: T.ink }}>{safest.label}</span>
+          <span style={{ ...type.num, fontSize: 15, color: confidenceColor(pct), fontWeight: 560 }}>{pct}% likely</span>
+        </div>
+        <div style={{ ...type.small, fontSize: 13.5, color: T.faint, marginTop: 8 }}>
+          The most probable single call across all {safest.scanned} markets we priced for this match.
+        </div>
+        {safest.reason && (
+          <div style={{ ...type.small, fontSize: 14.5, color: T.sub, marginTop: 14 }}>{safest.reason}</div>
+        )}
+      </Card>
+    </Reveal>
+  )
+}
+
 function VerdictStory({ fixture: fx, data, onReRun, busy }) {
   const r = data.recommendation || {}
   const conf = Math.round((r.confidence || 0) * 100)
@@ -2103,6 +2186,13 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
   /* Null when neither goals call came back — the panel then doesn't render at
    * all, rather than showing an empty shell. */
   const goals = readGoalsMarkets(data)
+
+  /* Double Chance / Draw No Bet — derived from the 1X2 probabilities, null with
+   * no odds. And the cross-market Safest Bet scan, which is always computable
+   * (it degrades to "nothing clears" rather than to null). Both are pure logic
+   * over numbers already produced — no extra model call. */
+  const oddsMarkets = deriveMatchOddsMarkets(data)
+  const safest = safestBet(data)
 
   const analysedAt = data._ts
     ? new Date(data._ts).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
@@ -2424,6 +2514,16 @@ function VerdictStory({ fixture: fx, data, onReRun, busy }) {
           </Card>
         </Reveal>
       )}
+
+      {/* SAFEST BET — highest-probability option across every market we priced,
+          gated by the 50% floor. Always rendered (it degrades to an honest
+          "nothing clears it" rather than disappearing) so the reader always
+          knows where the safest ground is, or that there isn't any. */}
+      <SafestBetCard safest={safest} />
+
+      {/* DOUBLE CHANCE / DRAW NO BET — derived from the 1X2 odds, no extra call.
+          Null (not rendered) for a match with no odds to derive them from. */}
+      {oddsMarkets && <MatchOddsMarketsCard markets={oddsMarkets} fx={fx} />}
 
       {/* OTHER MARKETS — read through readGoalsMarkets, which validates the
           three nested lines rather than trusting the schema held. Null when no
