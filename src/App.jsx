@@ -2856,12 +2856,28 @@ function MatchCenter({
  * BEST BETS + COMBO SLIP
  * ============================================================ */
 
-function BetCard({ entry, onOpen, comboActive, onToggleCombo }) {
+/* `settled` renders the same read as a result rather than as a bet: the phase
+ * label replaces the kick-off time, the graded outcome replaces the edge pill,
+ * and there is no Combine button, because a match that has been played is not
+ * something to add to a slip. The wording matches the Record screen's exactly
+ * ("Right" / "Wrong") so the two screens read as one record of the same call. */
+function BetCard({ entry, onOpen, comboActive, onToggleCombo, settled = false }) {
   const { fx, a } = entry
   const r = a.recommendation
   const conf = Math.round((r.confidence || 0) * 100)
   const edge = r.value_edge || 0
   const firstSentence = (r.reasoning || '').split(/(?<=[.!?])\s+/)[0] || ''
+  const phase = matchPhase(fx)
+  const score = phase === 'finished' ? matchScore(fx) : null
+  const when = settled
+    ? [
+        phase === 'finished' ? 'Full time' : phase === 'live' ? 'Under way' : 'Kicked off',
+        // a.finalScore is what autoResolve stored; matchScore(fx) is the live
+        // list's view of the same match. Preferring the stored string keeps this
+        // card agreeing with the Verdicts feed, which prints that same field.
+        a.finalScore || (score && score.home != null ? `${score.home} – ${score.away}` : null),
+      ].filter(Boolean).join(' · ')
+    : `${fx.matchDate ? `${fx.matchDate}, ` : ''}${fx.kickoff}`
   return (
     <Card className="iq-lift" onClick={() => onOpen(fx)} style={{ padding: 26, cursor: 'pointer' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
@@ -2869,15 +2885,32 @@ function BetCard({ entry, onOpen, comboActive, onToggleCombo }) {
           <Crest src={fx.homeLogo} name={fx.homeTeam} size={20} />
           <Crest src={fx.awayLogo} name={fx.awayTeam} size={20} />
           <span style={{ ...type.small, fontSize: 12.5, color: T.faint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {fx.competition} · {fx.matchDate ? `${fx.matchDate}, ` : ''}{fx.kickoff}
+            {fx.competition} · {when}
           </span>
         </span>
-        {edge > 0 && (
+        {settled ? (
+          a.resolved ? (
+            <span style={{
+              fontSize: 12, fontWeight: 560, fontFamily: T.sans,
+              color: a.correct ? T.good : T.bad,
+              background: a.correct ? T.goodBg : T.badBg,
+              borderRadius: 999, padding: '4px 11px', whiteSpace: 'nowrap',
+            }}>{a.correct ? 'Right' : 'Wrong'}</span>
+          ) : (
+            /* Played but not graded — honest about which of the two it is rather
+               than defaulting to "Wrong", which is what reading `a.correct`
+               without checking `a.resolved` would have printed. */
+            <span style={{
+              fontSize: 12, fontWeight: 560, fontFamily: T.sans, color: T.faint,
+              background: T.card2, borderRadius: 999, padding: '4px 11px', whiteSpace: 'nowrap',
+            }}>Not settled yet</span>
+          )
+        ) : edge > 0 ? (
           <span style={{
             fontSize: 12, fontWeight: 560, fontFamily: T.sans, color: T.good,
             background: T.goodBg, borderRadius: 999, padding: '4px 11px', whiteSpace: 'nowrap',
           }}>{edge}-pt edge</span>
-        )}
+        ) : null}
       </div>
 
       <div style={{ ...type.title, fontSize: 22, color: T.ink, marginTop: 14, letterSpacing: '-0.02em' }}>
@@ -2894,7 +2927,10 @@ function BetCard({ entry, onOpen, comboActive, onToggleCombo }) {
         <div style={{ flex: 1, height: 5, background: T.card2, borderRadius: 999, overflow: 'hidden' }}>
           <div style={{ width: `${conf}%`, height: '100%', background: T.accent, borderRadius: 999 }} />
         </div>
-        <span style={{ ...type.num, fontSize: 13, color: T.sub }}>{conf}% sure</span>
+        <span style={{ ...type.num, fontSize: 13, color: T.sub }}>
+          {settled ? `${conf}% sure at the time` : `${conf}% sure`}
+        </span>
+        {!settled && (
         <button onClick={(e) => { e.stopPropagation(); onToggleCombo(entry.id) }} style={{
           background: comboActive ? T.accent : 'transparent',
           color: comboActive ? T.accentInk : T.sub,
@@ -2906,30 +2942,49 @@ function BetCard({ entry, onOpen, comboActive, onToggleCombo }) {
           {comboActive ? <Check size={12} strokeWidth={2.4} /> : <Plus size={12} strokeWidth={2.2} />}
           {comboActive ? 'In combo' : 'Combine'}
         </button>
+        )}
       </div>
     </Card>
   )
 }
 
 /* Combo slip — the parlay math and correlation detection preserved exactly */
-function ComboSlip({ selections, entries, onRemove, onClear }) {
+function ComboSlip({ selections, entries, onRemove, onClear, droppedCount = 0 }) {
   if (!selections.length) return null
 
-  const chosen = selections.map(id => entries.find(e => String(e.id) === String(id))).filter(Boolean)
-  const allHaveOdds = chosen.every(e => {
+  const chosen = selections
+    .map(id => entries.find(e => String(e.id) === String(id)))
+    .filter(e => e && e.fx && hasVerdict(e.a))
+
+  /* Every figure below is a product seeded at 1, and `[].reduce` returns that
+   * seed — so an empty `chosen` used to render a Combined price of "1.00" and a
+   * 100.0% chance of landing, which is not a slip with nothing in it, it is a
+   * certainty of nothing. Reachable whenever the selected ids no longer resolve
+   * to entries: a fixture aging off the list, a cache entry dropped by
+   * sanitizeAnalysisCache, or — since this component is now handed only the open
+   * fixtures — a selected match kicking off while the slip is on screen. */
+  if (!chosen.length) return null
+
+  const decimalFor = (e) => {
     const pick = e.a.recommendation?.pick
     const o = e.fx?.odds
-    return pick && o && (pick === 'home_win' ? o.home : pick === 'away_win' ? o.away : o.draw)
+    if (!pick || !o) return null
+    const dec = parseFloat(pick === 'home_win' ? o.home : pick === 'away_win' ? o.away : o.draw)
+    return Number.isFinite(dec) && dec > 1 ? dec : null
+  }
+  const decimals = chosen.map(decimalFor)
+  const allHaveOdds = decimals.every(Boolean)
+  const combinedOdds = allHaveOdds ? decimals.reduce((acc, d) => acc * d, 1) : null
+
+  /* Null, not zero, when a pick has no model probability. `|| 0` silently turned
+   * one missing number into a 0.0% chance for the whole combo, which reads as a
+   * confident claim that it cannot land rather than as an admission that we
+   * can't price it. */
+  const probs = chosen.map(e => {
+    const p = e.a.recommendation?.model_probability
+    return typeof p === 'number' && Number.isFinite(p) && p > 0 && p <= 1 ? p : null
   })
-  const combinedOdds = allHaveOdds
-    ? chosen.reduce((acc, e) => {
-        const pick = e.a.recommendation?.pick
-        const o = e.fx.odds
-        const dec = pick === 'home_win' ? o.home : pick === 'away_win' ? o.away : o.draw
-        return acc * parseFloat(dec)
-      }, 1)
-    : null
-  const combinedProb = chosen.reduce((acc, e) => acc * (e.a.recommendation?.model_probability || 0), 1)
+  const combinedProb = probs.every(Boolean) ? probs.reduce((acc, p) => acc * p, 1) : null
 
   const teamMap = {}
   const matchIds = new Set()
@@ -2946,7 +3001,7 @@ function ComboSlip({ selections, entries, onRemove, onClear }) {
   })
 
   let kellyPct = null
-  if (combinedOdds && combinedProb > 0 && warnings.length === 0) {
+  if (combinedOdds && combinedProb && combinedProb > 0 && warnings.length === 0) {
     const b = combinedOdds - 1
     const p = combinedProb
     const q = 1 - p
@@ -2961,7 +3016,9 @@ function ComboSlip({ selections, entries, onRemove, onClear }) {
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
         <span style={{ ...type.title, fontSize: 19, color: T.ink }}>
-          Your combo — {selections.length} {selections.length === 1 ? 'pick' : 'picks'}
+          {/* chosen, not selections: the count has to match the rows and the
+              maths below, both of which drop selections that no longer resolve. */}
+          Your combo — {chosen.length} {chosen.length === 1 ? 'pick' : 'picks'}
         </span>
         <button onClick={onClear} style={{
           background: 'transparent', border: 'none', cursor: 'pointer', ...type.small, color: T.faint,
@@ -2991,6 +3048,17 @@ function ComboSlip({ selections, entries, onRemove, onClear }) {
         })}
       </div>
 
+      {droppedCount > 0 && (
+        /* A leg that kicks off leaves the slip, because it is no longer a bet
+         * anyone can place. Saying so matters: without this the price and the
+         * chance both change on their own and the reader has no way to know a
+         * pick was removed rather than mispriced. */
+        <div style={{ ...type.small, color: T.faint, marginTop: 12 }}>
+          {droppedCount === 1 ? 'One pick has' : `${droppedCount} picks have`} kicked off since you added
+          {droppedCount === 1 ? ' it' : ' them'} — dropped from the price below.
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 32, marginTop: 18, flexWrap: 'wrap' }}>
         <div>
           <div style={{ ...type.eyebrow, fontSize: 10.5 }}>Combined price</div>
@@ -3001,7 +3069,7 @@ function ComboSlip({ selections, entries, onRemove, onClear }) {
         <div>
           <div style={{ ...type.eyebrow, fontSize: 10.5 }}>Chance it all lands</div>
           <div style={{ ...type.num, fontSize: 22, fontWeight: 600, color: T.sub, marginTop: 4 }}>
-            {(combinedProb * 100).toFixed(1)}%
+            {combinedProb == null ? '—' : `${(combinedProb * 100).toFixed(1)}%`}
           </div>
         </div>
       </div>
@@ -3049,8 +3117,34 @@ function BestBetsScreen({ fixtures, analysisCache, onOpen, comboSelections, onTo
     [fixtures, analysisCache]
   )
 
-  const strong = entries.filter(e => (e.a.recommendation?.confidence || 0) >= 0.65)
-  const rest = entries.filter(e => (e.a.recommendation?.confidence || 0) < 0.65)
+  /* Split by whether the match is still ahead of the reader.
+   *
+   * This page ranked every cached read together and called the top of the list
+   * "our strongest current read", with a confidence bar and a Combine button —
+   * including matches that had already kicked off, already finished, and already
+   * been graded right or wrong on the Record screen. Nothing on the card said
+   * so: BetCard renders `fx.kickoff` and never looked at `a.resolved`, so the
+   * same fixture read "We were wrong" on Following and Record while still
+   * offering itself here as a bet to place. That is the disagreement between
+   * screens, and it is also how a settled match got into a combo.
+   *
+   * matchPhase is the same predicate runAnalysis uses to decide whether a read
+   * is a forward call at all, so "still bettable" means the same thing on both
+   * sides of the app. Settled reads are not hidden — the reader should still see
+   * what was read and how it turned out — they are moved below and shown with
+   * their result instead of a price. */
+  const open = entries.filter(e => matchPhase(e.fx) === 'upcoming')
+  const settled = entries
+    .filter(e => matchPhase(e.fx) !== 'upcoming')
+    .sort((x, y) => (y.a.resolvedAt || y.a._ts || 0) - (x.a.resolvedAt || x.a._ts || 0))
+
+  const strong = open.filter(e => (e.a.recommendation?.confidence || 0) >= 0.65)
+  const rest = open.filter(e => (e.a.recommendation?.confidence || 0) < 0.65)
+
+  // Selections that are no longer bettable — counted here, where both the full
+  // and the open set are in scope, so the slip can name the change.
+  const openIds = new Set(open.map(e => String(e.id)))
+  const droppedFromCombo = comboSelections.filter(id => !openIds.has(String(id))).length
 
   if (!entries.length) {
     return (
@@ -3099,7 +3193,9 @@ function BestBetsScreen({ fixtures, analysisCache, onOpen, comboSelections, onTo
           <div style={{ ...type.body, fontSize: 17, color: T.sub, marginTop: 12 }}>
             {strong.length > 0
               ? <>Our {strong.length === 1 ? 'strongest current read' : `${strong.length} strongest current reads`}, best first.</>
-              : 'Everything we’ve read so far — nothing has cleared our confidence bar yet.'}
+              : open.length > 0
+              ? 'Everything still to come that we’ve read — nothing has cleared our confidence bar yet.'
+              : 'Nothing we’ve read is still to come. The settled reads are below.'}
           </div>
         </div>
       </Reveal>
@@ -3129,7 +3225,22 @@ function BestBetsScreen({ fixtures, analysisCache, onOpen, comboSelections, onTo
         </div>
       )}
 
-      <ComboSlip selections={comboSelections} entries={entries} onRemove={onToggleCombo} onClear={onClearCombo} />
+      {settled.length > 0 && (
+        <div style={{ marginTop: 40 }}>
+          <Reveal><Eyebrow style={{ marginBottom: 14 }}>Already played — how they turned out</Eyebrow></Reveal>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            {settled.map(e => (
+              <Reveal key={e.id}><BetCard entry={e} onOpen={onOpen} settled /></Reveal>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Only open fixtures reach the slip, so a selection can never be a match
+          that has already been played — and droppedCount lets the slip say so
+          rather than just quietly repricing. */}
+      <ComboSlip selections={comboSelections} entries={open} droppedCount={droppedFromCombo}
+        onRemove={onToggleCombo} onClear={onClearCombo} />
     </div>
   )
 }
@@ -5150,15 +5261,61 @@ function MatchIQ({ user, username, onUsernameChange }) {
          * whether the look-back would have landed — but it never touches agent
          * performance or the ledger, because it was written after the result
          * was already known and grading it would flatter the record. */
-        if (!a.retrospective) {
-          perf = updateAgentPerformance(perf, resolved)
-          // Mirror the resolution into the permanent ledger (best-effort).
-          autoResolveInLedger(user, fx, resolved.actualResult)
-        }
+        if (!a.retrospective) perf = updateAgentPerformance(perf, resolved)
+        /* The ledger mirror is NOT fired from here — the reconciliation pass
+         * below owns it, and will pick this resolution up on the render this
+         * setAnalysisCache causes. Firing it here was a single un-retried
+         * attempt; see that comment for why that lost settlements. */
       }
     }
     if (changed) { setAnalysisCache(next); setAgentPerf(perf) }
   }, [fixtures, analysisCache])
+
+  /* -------- ledger resolution reconciliation --------
+   *
+   * Mirroring a resolution into Supabase used to happen inline in the pass
+   * above, fired once at the instant a fixture flipped to FINISHED — and that
+   * single attempt was the whole of it.
+   *
+   * autoResolveInLedger is deliberately best-effort: it catches everything and
+   * logs a warning, so the analysisCache UI keeps working when Supabase doesn't.
+   * The cost of that choice is that a failed mirror is indistinguishable from a
+   * successful one to the rest of the app. The local entry is stamped `resolved`
+   * either way, and the `a.resolved` guard above then skips it on every
+   * subsequent pass — so one dropped request, one expired token, one saturated
+   * connection pool (which this app has measurably had: see the 715-requests-a-
+   * second note in usePredictionLedger) loses that settlement permanently.
+   *
+   * The result is a genuine split-brain across the four surfaces this is meant
+   * to keep in step: the Verdicts feed, the Record percentage and the Profile
+   * stat all read analysisCache and show the settled call, while the Verified
+   * record reads the ledger and silently omits it. Nothing in the old code could
+   * ever notice or repair that.
+   *
+   * Deriving the push from state rather than from an event makes it retryable:
+   * whenever a user and a fixture list are both present, anything resolved
+   * locally but not yet confirmed pushed gets pushed. autoResolveInLedger only
+   * updates rows with `resolved = false`, so this is idempotent — a row already
+   * settled is left alone and a manual settlement is never overwritten. The ref
+   * keeps it to one attempt per fixture per session rather than one per render.
+   *
+   * Note this is not covering for a null `user`: MatchIQ only mounts once a user
+   * exists (or un-gated with none at all, where the ledger no-ops by design). */
+  const ledgerPushedRef = useRef(new Set())
+  useEffect(() => {
+    if (!user || !fixtures.length) return
+    const byId = new Map(fixtures.map(f => [String(f.id), f]))
+    for (const [id, a] of Object.entries(analysisCache)) {
+      // autoResolved only: a manual settlement has no real score and is written
+      // by resolveManual through manualResolveInLedger instead.
+      if (!a?.resolved || !a.autoResolved || !a.actualResult || a.retrospective) continue
+      if (ledgerPushedRef.current.has(id)) continue
+      const fx = byId.get(id)
+      if (!fx) continue
+      ledgerPushedRef.current.add(id)
+      autoResolveInLedger(user, fx, a.actualResult)
+    }
+  }, [user, fixtures, analysisCache])
 
   function resolveManual(id, correct) {
     setAnalysisCache(prev => {
@@ -5488,6 +5645,27 @@ function MatchIQ({ user, username, onUsernameChange }) {
     sync(center, setCenter)
   }, [fixtures, selected, center])
 
+  /* -------- fixtures with prices attached --------
+   *
+   * The combo slip's Combined price reads `fx.odds`, and the fixture objects in
+   * `fixtures` have never carried one. Odds are attached by hydrate() below, on
+   * the way into `selected` and `center` only — so on Best Bets every entry
+   * failed ComboSlip's `allHaveOdds` test and the Combined price rendered "—"
+   * unconditionally, no matter how many priced picks were in the slip. That is
+   * the reported "combined price does not work", and it was never a maths bug:
+   * the maths never had a price to multiply.
+   *
+   * Matched here from the odds already in memory, so this costs no request and
+   * uses the very same matcher hydrate() does — the price in the slip cannot
+   * disagree with the price on the verdict screen. */
+  const fixturesPriced = useMemo(() => {
+    if (!oddsCache.length) return fixtures
+    return fixtures.map(f => {
+      const found = lookupOddsForFixture(f, oddsCache)
+      return found ? { ...f, ...found } : f
+    })
+  }, [fixtures, oddsCache])
+
   /* -------- selection + analysis -------- */
   /* Attaches the live odds and any cached head-to-head to a fixture, and logs
    * the price so movement can be shown later. Shared by both entry points. */
@@ -5753,7 +5931,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
     )
     if (activeTab === 'bets') return (
       <BestBetsScreen
-        fixtures={fixtures} analysisCache={analysisCache} onOpen={openFixture}
+        fixtures={fixturesPriced} analysisCache={analysisCache} onOpen={openFixture}
         comboSelections={comboSelections} onToggleCombo={toggleCombo} onClearCombo={clearCombo}
       />
     )
