@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import {
   Sun, Moon, ChevronLeft, ChevronRight, X as XIcon, Check, Heart,
-  Mail, ArrowUpRight, Plus, Minus, Eye, EyeOff, Pencil,
+  Mail, ArrowUpRight, Plus, Minus, Eye, EyeOff, Pencil, Lock,
 } from 'lucide-react'
 import '@fontsource-variable/inter'
 
@@ -450,7 +450,7 @@ const CONTACT_EMAIL = 'agwunobisomtochukwu@gmail.com'
 const SOCIAL_LINKS = {
   github:   'https://github.com/somtolabs',
   linkedin: 'https://www.linkedin.com/in/agwunobi-somtochukwu-a61870342',
-  x:        'https://x.com/gramzfgs',
+  x:        'https://x.com/somtoinc',
   email:    `mailto:${CONTACT_EMAIL}`,
 }
 const mailto = (subject) => `mailto:${CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}`
@@ -4585,29 +4585,130 @@ function UsernameScreen({ theme, user, onSaved }) {
  * PROFILE — identity, record, preferences, sign out
  * ============================================================ */
 
-/* Twelve original geometric avatar marks — one cohesive family built from the
- * app's accent blue plus three muted tones (indigo, teal, amber) over dark
- * tinted grounds. Each is a distinct simple composition, legible at 32–96px. */
-const AV = { blue: '#2997FF', ind: '#6C6BE8', teal: '#33B7A6', amber: '#F0B24C' }
-const AV_BG = { navy: '#101B33', plum: '#241633', deep: '#0E2A2A', dusk: '#1B1A3A' }
+/* Twelve original flat-illustrated human avatars — a deliberately simple,
+ * silhouette-first family (shoulders, head, hair) that stays legible from 28px
+ * up to 96px without relying on fine facial detail. Diverse across skin tone,
+ * hair style and colour, and presentation; glasses, beards and a head covering
+ * give individuals their own read. These are illustrated identity marks, so
+ * they carry colour the way team crests and Google photos do — the surrounding
+ * profile chrome stays accent-only. Ids are unchanged (preset_1..12) so any
+ * avatar a user already picked still resolves to a real face. */
+const SKIN = { l1: '#F3C9A6', l2: '#E4AC82', l3: '#CC9863', l4: '#A76E3C', l5: '#7C4A24', l6: '#593317' }
+const HAIR = { black: '#232630', brown: '#5B3A22', auburn: '#8A3A1D', blonde: '#D6AC57', grey: '#A2A8AE', dark: '#15171F' }
+const TOP = { blue: '#2997FF', indigo: '#5B57C9', teal: '#2E9E8F', amber: '#CF9438', slate: '#3D4859', rose: '#B0566B' }
+const GROUND = { navy: '#111A2E', plum: '#221634', deep: '#0F2622', dusk: '#191A30', ink: '#14161C', moss: '#152318' }
 export const AVATAR_PRESET_IDS = Array.from({ length: 12 }, (_, i) => `preset_${i + 1}`)
 
+/* One person per preset, described declaratively so every face is built by the
+ * same renderer and only its features differ — no two share a full combination
+ * of skin, hair, style and top. */
+const PEOPLE = {
+  preset_1:  { ground: 'navy', top: 'blue',   skin: 'l2', hair: 'black',  style: 'short' },
+  preset_2:  { ground: 'deep', top: 'teal',   skin: 'l5', hair: 'dark',   style: 'buzz', beard: true },
+  preset_3:  { ground: 'plum', top: 'rose',   skin: 'l3', hair: 'brown',  style: 'long' },
+  preset_4:  { ground: 'moss', top: 'amber',  skin: 'l4', hair: 'black',  style: 'afro' },
+  preset_5:  { ground: 'dusk', top: 'indigo', skin: 'l2', hair: 'brown',  style: 'bun', glasses: true },
+  preset_6:  { ground: 'ink',  top: 'blue',   skin: 'l6', hair: 'dark',   style: 'bald', beard: true },
+  preset_7:  { ground: 'navy', top: 'slate',  skin: 'l1', hair: 'blonde', style: 'sidepart' },
+  preset_8:  { ground: 'deep', top: 'blue',   skin: 'l3', hair: 'black',  style: 'ponytail' },
+  preset_9:  { ground: 'plum', top: 'indigo', skin: 'l4', hair: 'dark',   style: 'hijab' },
+  preset_10: { ground: 'moss', top: 'teal',   skin: 'l5', hair: 'black',  style: 'curly', glasses: true },
+  preset_11: { ground: 'dusk', top: 'amber',  skin: 'l1', hair: 'blonde', style: 'bob' },
+  preset_12: { ground: 'ink',  top: 'slate',  skin: 'l3', hair: 'grey',   style: 'shortgrey', beard: true },
+}
+
+const EYE = '#2A2A2E'
+
+function HumanGlyph({ cfg }) {
+  const skin = SKIN[cfg.skin]
+  const hair = HAIR[cfg.hair]
+  const top = TOP[cfg.top]
+  const ground = GROUND[cfg.ground]
+  const s = cfg.style
+  const isHijab = s === 'hijab'
+  // The head covering needs to read as its own layer, so its shoulders sit in a
+  // neutral slate while the scarf takes the configured colour.
+  const shoulders = isHijab ? TOP.slate : top
+
+  return (
+    <g>
+      <rect width="64" height="64" fill={ground} />
+      {/* neck, with a soft shadow where it meets the jaw */}
+      <rect x="28" y="37" width="8" height="10" fill={skin} />
+      <rect x="28" y="37" width="8" height="4" fill="rgba(0,0,0,0.14)" />
+      {/* shoulders */}
+      <path d="M9 64 C9 51 19 45 32 45 C45 45 55 51 55 64 Z" fill={shoulders} />
+
+      {/* hair behind the head (crown + sides); the face is drawn on top so the
+          hairline falls naturally at the forehead */}
+      {s === 'afro' && <circle cx="32" cy="26" r="17" fill={hair} />}
+      {s === 'long' && (<>
+        <path d="M17 24 L16 53 Q16 56 20 56 L21 30 Z" fill={hair} />
+        <path d="M47 24 L48 53 Q48 56 44 56 L43 30 Z" fill={hair} />
+        <ellipse cx="32" cy="26" rx="15" ry="14" fill={hair} />
+      </>)}
+      {s === 'bob' && (<>
+        <path d="M18 26 L18 41 Q18 44 22 44 L22 30 Z" fill={hair} />
+        <path d="M46 26 L46 41 Q46 44 42 44 L42 30 Z" fill={hair} />
+        <ellipse cx="32" cy="25" rx="15" ry="13.5" fill={hair} />
+      </>)}
+      {s === 'ponytail' && (<>
+        <ellipse cx="49" cy="31" rx="4.5" ry="9" fill={hair} />
+        <ellipse cx="32" cy="25" rx="13.5" ry="12.5" fill={hair} />
+      </>)}
+      {s === 'bun' && (<>
+        <circle cx="32" cy="11" r="5" fill={hair} />
+        <ellipse cx="32" cy="25" rx="13" ry="12" fill={hair} />
+      </>)}
+      {(s === 'short' || s === 'sidepart') && <ellipse cx="32" cy="25.5" rx="13.5" ry="12.5" fill={hair} />}
+      {s === 'shortgrey' && <ellipse cx="32" cy="26.5" rx="13" ry="11.5" fill={hair} />}
+      {s === 'buzz' && <ellipse cx="32" cy="26" rx="12.5" ry="11" fill={hair} />}
+      {s === 'curly' && [[22, 25], [27, 20.5], [32, 19], [37, 20.5], [42, 25], [23, 30], [41, 30]]
+        .map(([cx, cy], i) => <circle key={i} cx={cx} cy={cy} r="4.4" fill={hair} />)}
+      {isHijab && <path d="M14 33 C14 16 50 16 50 33 C50 45 45 57 45 57 L19 57 C19 57 14 45 14 33 Z" fill={top} />}
+
+      {/* face */}
+      {isHijab
+        ? <ellipse cx="32" cy="32" rx="10.5" ry="12" fill={skin} />
+        : <ellipse cx="32" cy="30" rx="12" ry="13" fill={skin} />}
+      {/* ears */}
+      {!isHijab && (<>
+        <circle cx="20.5" cy="31" r="2.6" fill={skin} />
+        <circle cx="43.5" cy="31" r="2.6" fill={skin} />
+      </>)}
+
+      {/* fringe drawn over the forehead for styles that part or sweep */}
+      {s === 'sidepart' && <path d="M20 22 Q31 14 45 21 Q39 25 32 23.5 Q26 22.5 22 27 Z" fill={hair} />}
+      {s === 'short' && <path d="M21 23 Q32 18 43 23 Q37 21 32 21 Q27 21 21 23 Z" fill={hair} />}
+
+      {/* beard along the jaw (kept below the eyes) */}
+      {cfg.beard && <path d="M22 33 C24 44 40 44 42 33 C42 42 38 45 32 45 C26 45 22 42 22 33 Z" fill={hair} />}
+
+      {/* eyes — small anchors that read the shape as a face */}
+      {isHijab ? (<>
+        <circle cx="28" cy="32" r="1.3" fill={EYE} />
+        <circle cx="36" cy="32" r="1.3" fill={EYE} />
+      </>) : (<>
+        <circle cx="27" cy="30" r="1.4" fill={EYE} />
+        <circle cx="37" cy="30" r="1.4" fill={EYE} />
+      </>)}
+
+      {/* glasses */}
+      {cfg.glasses && (
+        <g fill="none" stroke={hair} strokeWidth="1.6">
+          <rect x="22.4" y="26.6" width="8.4" height="6.6" rx="2.2" />
+          <rect x="33.2" y="26.6" width="8.4" height="6.6" rx="2.2" />
+          <path d="M30.8 29.8 h2.4" />
+        </g>
+      )}
+    </g>
+  )
+}
+
 function PresetGlyph({ id }) {
-  switch (id) {
-    case 'preset_1': return (<g><rect width="64" height="64" fill={AV_BG.navy}/><circle cx="32" cy="32" r="20" fill="none" stroke={AV.blue} strokeWidth="4"/><circle cx="32" cy="32" r="11" fill="none" stroke={AV.teal} strokeWidth="4"/><circle cx="32" cy="32" r="3.5" fill={AV.amber}/></g>)
-    case 'preset_2': return (<g><rect width="64" height="64" fill={AV_BG.dusk}/><path d="M0 64 L64 0 L64 64 Z" fill={AV.blue}/><path d="M0 0 L0 64 L64 0 Z" fill={AV.ind} opacity="0.55"/></g>)
-    case 'preset_3': return (<g><rect width="64" height="64" fill={AV_BG.deep}/><path d="M14 50 A36 36 0 0 1 50 14 L50 50 Z" fill={AV.teal}/><circle cx="22" cy="42" r="5" fill={AV.amber}/></g>)
-    case 'preset_4': return (<g><rect width="64" height="64" fill={AV_BG.plum}/><path d="M32 16 L50 46 L14 46 Z" fill={AV.blue}/><path d="M32 30 L40 46 L24 46 Z" fill={AV.amber}/></g>)
-    case 'preset_5': return (<g><rect width="64" height="64" fill={AV_BG.navy}/><circle cx="25" cy="32" r="16" fill={AV.blue} opacity="0.85"/><circle cx="39" cy="32" r="16" fill={AV.amber} opacity="0.7"/></g>)
-    case 'preset_6': return (<g><rect width="64" height="64" fill={AV_BG.dusk}/><circle cx="24" cy="24" r="7" fill={AV.blue}/><circle cx="40" cy="24" r="7" fill={AV.teal}/><circle cx="24" cy="40" r="7" fill={AV.teal}/><circle cx="40" cy="40" r="7" fill={AV.blue}/></g>)
-    case 'preset_7': return (<g><rect width="64" height="64" fill={AV_BG.navy}/><rect x="16" y="36" width="8" height="14" rx="4" fill={AV.teal}/><rect x="28" y="26" width="8" height="24" rx="4" fill={AV.blue}/><rect x="40" y="16" width="8" height="34" rx="4" fill={AV.amber}/></g>)
-    case 'preset_8': return (<g><rect width="64" height="64" fill={AV_BG.deep}/><path d="M16 38 L32 24 L48 38" fill="none" stroke={AV.blue} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/><path d="M16 48 L32 34 L48 48" fill="none" stroke={AV.teal} strokeWidth="6" strokeLinecap="round" strokeLinejoin="round"/></g>)
-    case 'preset_9': return (<g><rect width="64" height="64" fill={AV_BG.plum}/><circle cx="32" cy="32" r="18" fill={AV.blue}/><circle cx="40" cy="28" r="15" fill={AV_BG.plum}/><circle cx="24" cy="26" r="2.5" fill={AV.amber}/></g>)
-    case 'preset_10': return (<g><rect width="64" height="64" fill={AV_BG.navy}/><rect x="27" y="14" width="10" height="36" rx="5" fill={AV.amber}/><rect x="14" y="27" width="36" height="10" rx="5" fill={AV.blue} opacity="0.9"/></g>)
-    case 'preset_11': return (<g><rect width="64" height="64" fill={AV_BG.dusk}/><rect x="14" y="14" width="36" height="36" rx="9" fill="none" stroke={AV.teal} strokeWidth="4"/><rect x="24" y="24" width="16" height="16" rx="5" fill={AV.blue}/></g>)
-    case 'preset_12': return (<g><rect width="64" height="64" fill={AV_BG.deep}/>{[0,45,90,135,180,225,270,315].map(a => { const r=a*Math.PI/180; return <line key={a} x1={32+9*Math.cos(r)} y1={32+9*Math.sin(r)} x2={32+22*Math.cos(r)} y2={32+22*Math.sin(r)} stroke={AV.blue} strokeWidth="4" strokeLinecap="round"/> })}<circle cx="32" cy="32" r="6" fill={AV.amber}/></g>)
-    default: return <rect width="64" height="64" fill={AV_BG.navy}/>
-  }
+  const cfg = PEOPLE[id]
+  if (!cfg) return <rect width="64" height="64" fill={GROUND.navy} />
+  return <HumanGlyph cfg={cfg} />
 }
 
 function PresetAvatar({ id, size = 28 }) {
@@ -4678,6 +4779,25 @@ function Segmented({ value, options, onChange }) {
         }}>{o.label}</button>
       ))}
     </div>
+  )
+}
+
+/* A circular progress ring — accent arc over a hairline track. Used for the
+ * profile's hero stat; `pct` is real (accuracy, or progress toward the first
+ * five resolved calls), never decorative. */
+function StatRing({ pct, size = 112, stroke = 9, dim = false }) {
+  const r = (size - stroke) / 2
+  const c = 2 * Math.PI * r
+  const p = Math.max(0, Math.min(100, pct || 0))
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true"
+      style={{ display: 'block' }}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={T.line} strokeWidth={stroke} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none"
+        stroke={dim ? T.lineHi : T.accent} strokeWidth={stroke} strokeLinecap="round"
+        strokeDasharray={`${(c * p) / 100} ${c}`}
+        transform={`rotate(-90 ${size / 2} ${size / 2})`} />
+    </svg>
   )
 }
 
@@ -4763,9 +4883,10 @@ function ProfileScreen({
       {/* Identity — a considered "cover" moment that materializes in, with its
           own faint neutral wash (no colour of its own). */}
       <Materialize>
-        <div style={{
-          textAlign: 'center', padding: isMobile ? '52px 20px 40px' : '72px 20px 52px',
+        <div className="iq-elevated" style={{
+          textAlign: 'center', padding: isMobile ? '48px 20px 38px' : '64px 20px 48px',
           marginBottom: 8, borderRadius: 24, position: 'relative', overflow: 'hidden',
+          background: T.card, border: `1px solid ${T.line}`,
         }}>
           <div style={{ display: 'inline-block', position: 'relative' }}>
             <button onClick={() => setPickerOpen(o => !o)} aria-label="Edit avatar"
@@ -4886,23 +5007,60 @@ function ProfileScreen({
         </div>
       </Reveal>
 
-      {/* Record */}
+      {/* Record — a hero accuracy ring leads, with the supporting numbers in a
+          row beneath it. Every figure is real: accuracy and the count come from
+          resolved calls, and before there are five resolved the ring shows honest
+          progress toward that threshold rather than a fake percentage. */}
       <Reveal>
         <Eyebrow style={{ marginBottom: 14 }}>Your record</Eyebrow>
-        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: 16 }}>
-          <StatCard label="Analyses run" big={total}
+
+        <Card className="iq-elevated" style={{
+          padding: isMobile ? '26px 24px' : '30px 32px', display: 'flex', alignItems: 'center',
+          gap: isMobile ? 22 : 30, flexWrap: 'wrap',
+        }}>
+          <div style={{ position: 'relative', width: 112, height: 112, flexShrink: 0 }}>
+            <StatRing pct={resolved.length < 5 ? (resolved.length / 5) * 100 : accuracy}
+              dim={resolved.length < 5} />
+            <div style={{
+              position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center',
+            }}>
+              {resolved.length < 5 ? (
+                <>
+                  <span style={{ ...type.display, fontSize: 26, color: T.ink, fontVariantNumeric: 'tabular-nums' }}>
+                    {resolved.length}<span style={{ color: T.faint, fontSize: 17 }}>/5</span>
+                  </span>
+                  <span style={{ ...type.small, fontSize: 10.5, color: T.faint, textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 2 }}>resolved</span>
+                </>
+              ) : (
+                <>
+                  <span style={{ ...type.display, fontSize: 30, color: accuracy >= 50 ? T.accent : T.ink, fontVariantNumeric: 'tabular-nums' }}>
+                    {accuracy}%
+                  </span>
+                  <span style={{ ...type.small, fontSize: 10.5, color: T.faint, textTransform: 'uppercase', letterSpacing: '0.05em', marginTop: 2 }}>accuracy</span>
+                </>
+              )}
+            </div>
+          </div>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div style={{ ...type.title, fontSize: 20, color: T.ink }}>
+              {resolved.length < 5 ? 'Building your record' : `${correct} of ${resolved.length} calls correct`}
+            </div>
+            <p style={{ ...type.small, fontSize: 14, color: T.sub, marginTop: 8, marginBottom: 0, lineHeight: 1.6 }}>
+              {resolved.length < 5
+                ? `Once five tracked matches have resolved, your accuracy shows here. ${resolved.length} counted so far.`
+                : `Across every tracked match that has finished and settled. Only genuine forward calls count — never a match read after it was played.`}
+            </p>
+          </div>
+        </Card>
+
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr 1fr', gap: 14, marginTop: 14 }}>
+          <StatCard label="Analyses run" big={total} bigSize={34}
             context={`across ${uniqueMatches} ${uniqueMatches === 1 ? 'match' : 'matches'}`} />
-          {resolved.length < 5 ? (
-            <StatCard label="Accuracy" big="Building a record" bigSize={22} bigColor={T.ink}
-              context={`${resolved.length} of 5 resolved`} />
-          ) : (
-            <StatCard label="Accuracy" big={`${accuracy}%`} bigColor={accuracy >= 50 ? T.accent : T.sub}
-              context={`${correct} correct out of ${resolved.length} resolved.`} />
-          )}
-          <StatCard label="Average confidence" big={avgConf != null ? `${avgConf}%` : '—'}
+          <StatCard label="Average confidence" big={avgConf != null ? `${avgConf}%` : '—'} bigSize={34}
             context="across your analyses." />
-          <StatCard label="Best streak" big={bestStreak}
-            context={bestStreak > 0 ? 'consecutive correct calls.' : 'Track a match to start.'} />
+          <StatCard label="Best streak" big={bestStreak} bigSize={34}
+            context={bestStreak > 0 ? `consecutive correct call${bestStreak === 1 ? '' : 's'}.` : 'Track a match to start.'} />
         </div>
       </Reveal>
 
@@ -5000,7 +5158,7 @@ function ProfileScreen({
  * ABOUT
  * ============================================================ */
 
-function AboutScreen({ apiStatus, user, onSignOut, onOpenProfile }) {
+function AboutScreen({ apiStatus, user, onSignOut, onOpenProfile, onOpenPrivacy }) {
   const statuses = [
     { key: 'football', name: 'Match data' },
     { key: 'odds', name: 'Betting prices' },
@@ -5109,6 +5267,27 @@ function AboutScreen({ apiStatus, user, onSignOut, onOpenProfile }) {
 
       <Reveal>
         <Card style={{ padding: 30, marginTop: 18 }}>
+          <Eyebrow>Your privacy</Eyebrow>
+          <p style={{ ...type.body, fontSize: 15, color: T.sub, marginTop: 12, marginBottom: 0 }}>
+            A plain-English rundown of exactly what MatchIQ stores, what it sends to the AI that
+            writes your analysis, and how to get your account deleted. No boilerplate.
+          </p>
+          <button onClick={onOpenPrivacy} className="iq-row" style={{
+            marginTop: 16, width: '100%', textAlign: 'left', cursor: 'pointer',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            padding: '13px 16px', background: T.card2, border: 'none', borderRadius: 14,
+            color: T.ink, fontFamily: T.sans, fontSize: 14.5, fontWeight: 560,
+          }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+              <Lock size={15} strokeWidth={1.9} style={{ color: T.accent }} /> Read the privacy policy
+            </span>
+            <ArrowUpRight size={15} strokeWidth={1.8} style={{ color: T.faint }} />
+          </button>
+        </Card>
+      </Reveal>
+
+      <Reveal>
+        <Card style={{ padding: 30, marginTop: 18 }}>
           <Eyebrow>Is everything working?</Eyebrow>
           <div style={{ marginTop: 12 }}>
             {statuses.map(s => (
@@ -5130,10 +5309,174 @@ function AboutScreen({ apiStatus, user, onSignOut, onOpenProfile }) {
         </div>
         <div style={{ ...type.small, color: T.faint, marginTop: 14, lineHeight: 1.8 }}>
           Data: football-data.org and the-odds-api.com · Analysis: Groq ({GROQ_MODEL})<br />
-          <a href={mailto('Privacy Policy Request')} style={{ color: T.sub }}>Privacy</a> · {' '}
+          <button onClick={onOpenPrivacy} style={{
+            background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+            color: T.sub, font: 'inherit', textDecoration: 'underline',
+          }}>Privacy</button> · {' '}
           <a href={mailto('Terms of Service Request')} style={{ color: T.sub }}>Terms</a><br />
           © 2026 MatchIQ · Bright Agwunobi. This is analysis, not financial advice — bet only what
           you'd be at peace losing.
+        </div>
+      </Reveal>
+    </div>
+  )
+}
+
+/* ============================================================
+ * PRIVACY — a real, MatchIQ-specific policy written against the
+ * actual auth, storage and API code, not boilerplate.
+ * ============================================================ */
+
+function PrivacyScreen({ user, onBack }) {
+  const updated = 'July 2026'
+
+  /* Small building blocks so the whole policy shares one voice and rhythm. */
+  const Section = ({ eyebrow, children }) => (
+    <Reveal>
+      <Card style={{ padding: 30, marginTop: 18 }}>
+        <Eyebrow>{eyebrow}</Eyebrow>
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {children}
+        </div>
+      </Card>
+    </Reveal>
+  )
+  const P = ({ children }) => (
+    <p style={{ ...type.body, fontSize: 15.5, lineHeight: 1.7, color: T.sub, margin: 0 }}>{children}</p>
+  )
+  const Item = ({ term, children }) => (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+      <span style={{ marginTop: 8, width: 5, height: 5, borderRadius: '50%', background: T.accent, flexShrink: 0 }} />
+      <span style={{ ...type.small, fontSize: 14.5, lineHeight: 1.65, color: T.sub }}>
+        <strong style={{ color: T.ink, fontWeight: 600 }}>{term}</strong>{term ? ' — ' : ''}{children}
+      </span>
+    </div>
+  )
+  const em = { color: T.ink, fontWeight: 600 }
+
+  return (
+    <div style={{ maxWidth: 620, margin: '0 auto' }}>
+      <button onClick={onBack} className="iq-row" style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, background: 'transparent',
+        border: 'none', cursor: 'pointer', padding: '4px 4px', marginTop: 4,
+        color: T.sub, fontFamily: T.sans, fontSize: 13.5, fontWeight: 560,
+      }}>
+        <ChevronLeft size={16} strokeWidth={2} /> Back to About
+      </button>
+
+      <Reveal>
+        <div style={{ padding: '20px 0 4px' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+            <span style={{
+              width: 42, height: 42, borderRadius: 12, background: T.accentBg, color: T.accent,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            }}><Lock size={19} strokeWidth={2} /></span>
+            <div style={{ ...type.display, fontSize: 34, color: T.ink }}>Privacy Policy</div>
+          </div>
+          <p style={{ ...type.body, fontSize: 16.5, color: T.sub, marginTop: 16, marginBottom: 0 }}>
+            MatchIQ is a solo project by Bright Agwunobi. This policy says — plainly, without the
+            usual boilerplate — exactly what the app collects, where it lives, and what leaves it.
+            If anything here is unclear, the email at the bottom reaches a real person.
+          </p>
+          <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 12 }}>
+            Last updated {updated}
+          </div>
+        </div>
+      </Reveal>
+
+      <Section eyebrow="What we collect">
+        <P>Two kinds of thing, and nothing beyond them:</P>
+        <Item term="Your Google account basics">
+          MatchIQ only signs you in with Google. From that we receive your <span style={em}>name</span>,{' '}
+          <span style={em}>email address</span> and <span style={em}>profile photo</span>. We never see
+          your Google password — sign-in happens on Google's side.
+        </Item>
+        <Item term="What you create in the app">
+          the <span style={em}>analyses you run</span>, the <span style={em}>matches you track</span>,
+          your <span style={em}>prediction record</span> (each pick and whether it landed), your{' '}
+          <span style={em}>theme and notification preferences</span>, and the{' '}
+          <span style={em}>@username</span> you choose if you set one.
+        </Item>
+        <P>
+          There's no tracking questionnaire, no advertising profile, and no location collection. The app
+          is hosted on Vercel, which records anonymous, aggregate traffic analytics (page views and the
+          like) that aren't tied to your identity.
+        </P>
+      </Section>
+
+      <Section eyebrow="Where it's stored">
+        <P>
+          Your account and app data live in <span style={em}>Supabase</span> (a hosted Postgres
+          database). Private data is protected by <span style={em}>Row Level Security</span>, which
+          scopes each row to the user who owns it — your analyses, tracked matches and prediction
+          record are readable only by your own signed-in account, not by other users.
+        </P>
+        <P>
+          The one deliberate exception is your <span style={em}>@username</span>: it lives in a table
+          other signed-in users can check, so the app can tell you whether a handle is already taken.
+          Treat your handle as public, and don't put anything private in it. Some of your preferences
+          are also cached in your browser's local storage so the app loads quickly.
+        </P>
+      </Section>
+
+      <Section eyebrow="What we send to other services">
+        <P>
+          To write an analysis, MatchIQ sends the <span style={em}>match data</span> — the teams, their
+          form and league standing, the betting odds, head-to-head history and recent news headlines —
+          to <span style={em}>Groq</span>, the AI service that generates the reasoning. That request
+          carries the football data only; <span style={em}>your name and email are never part of it</span>.
+        </P>
+        <P>These services are the source of the public sports data the app shows. We fetch <em>from</em> them — we don't send your personal data <em>to</em> them:</P>
+        <Item term="football-data.org">fixtures, standings, scorers and form.</Item>
+        <Item term="The Odds API">betting prices for each match.</Item>
+        <Item term="NewsAPI">recent news headlines for context.</Item>
+        <Item term="API-Football">goal scorers once a match has finished.</Item>
+        <P>
+          <span style={em}>Google</span> handles sign-in, <span style={em}>Supabase</span> stores your
+          data, and <span style={em}>Vercel</span> hosts the site. That's the complete list.
+        </P>
+      </Section>
+
+      <Section eyebrow="What we don't do">
+        <P>
+          We don't sell your data, and we don't share it with advertisers or data brokers — there are
+          none involved in this app. Your email isn't used for marketing. The football data sent to Groq
+          exists solely to generate the analysis you asked for.
+        </P>
+      </Section>
+
+      <Section eyebrow="Deleting your account">
+        <P>
+          You can have your account and all of its data deleted at any time. From your{' '}
+          <span style={em}>Profile</span> page, the “Delete account” option opens a pre-filled email; or
+          write directly to the address below asking for deletion. Once confirmed, your account, your
+          stored analyses and your prediction record are removed within a few days.
+        </P>
+      </Section>
+
+      <Section eyebrow="Questions about your privacy">
+        <P>Privacy questions, data requests, or anything unclear above — reach a real person here:</P>
+        <a href={mailto('Privacy question')} className="iq-row" style={{
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          padding: '13px 16px', background: T.card2, borderRadius: 14, textDecoration: 'none',
+          color: T.ink, fontFamily: T.sans, fontSize: 14.5, fontWeight: 560, marginTop: 2,
+        }}>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            <Mail size={15} strokeWidth={1.9} style={{ color: T.accent }} /> {CONTACT_EMAIL}
+          </span>
+          <ArrowUpRight size={15} strokeWidth={1.8} style={{ color: T.faint }} />
+        </a>
+        {user?.email && (
+          <div style={{ ...type.small, fontSize: 12.5, color: T.faint }}>
+            You're signed in as {user.email}.
+          </div>
+        )}
+      </Section>
+
+      <Reveal>
+        <div style={{ ...type.small, fontSize: 12.5, color: T.faint, marginTop: 22, marginBottom: 8, lineHeight: 1.7 }}>
+          If this policy changes, the “last updated” date above changes with it. MatchIQ is analysis,
+          not financial advice.
         </div>
       </Reveal>
     </div>
@@ -6197,7 +6540,11 @@ function MatchIQ({ user, username, onUsernameChange }) {
     )
     if (activeTab === 'about') return (
       <AboutScreen apiStatus={apiStatus} user={user} onOpenProfile={() => switchTab('profile')}
+        onOpenPrivacy={() => switchTab('privacy')}
         onSignOut={async () => { try { await signOut() } catch (e) { console.warn('sign out failed:', e.message) } }} />
+    )
+    if (activeTab === 'privacy') return (
+      <PrivacyScreen user={user} onBack={() => switchTab('about')} />
     )
     return null
   }
