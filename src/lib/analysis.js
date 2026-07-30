@@ -378,6 +378,45 @@ export function hasVerdict(a) {
     && typeof a.recommendation.pick === 'string' && a.recommendation.pick.length > 0
 }
 
+/* The completeness gate for a FRESHLY sampled analysis — stricter than hasVerdict
+ * on purpose, and used only at the point a new synthesis response is accepted.
+ *
+ * hasVerdict stays lenient because it also guards the RENDERING of already-stored
+ * reads, some of which predate later schema fields (scoreline, case_for,
+ * data_read); tightening it would silently drop those historical entries from
+ * every list that shows them. So the tighter check lives here, write-side only.
+ *
+ * It exists because the provider swap removed a guarantee the pipeline used to
+ * lean on. Groq validated the completion server-side against response_format and
+ * returned json_validate_failed when the output didn't hold together, so a
+ * structurally-broken read never reached the client. Cerebras returns HTTP 200
+ * with whatever was sampled, which makes the client the ONLY thing between a
+ * half-formed response and the ledger — and hasVerdict alone is too weak for that
+ * job: it passes any object carrying a `pick` string. A response that named a
+ * pick but never built the confidence, the reasoning, or the three-angle
+ * analysis behind it — the exact "pick first, reasons after" shape this project
+ * fixed before — would otherwise be accepted, cached, written to the record and
+ * shown as a finished verdict.
+ *
+ * A genuine complete synthesis always carries every field checked here (verified
+ * across repeated live calls). Requiring them means a half-formed read fails this
+ * gate, the one automatic retry fires, and a real miss surfaces as "didn't
+ * complete" rather than a hollow prediction. */
+export function isCompleteVerdict(a) {
+  if (!hasVerdict(a)) return false
+  const r = a.recommendation
+  const isObj = (x) => !!x && typeof x === 'object'
+  const confOk = typeof r.confidence === 'number' && Number.isFinite(r.confidence)
+    && r.confidence > 0 && r.confidence <= 1
+  const reasoningOk = typeof r.reasoning === 'string' && r.reasoning.trim().length > 0
+  // The reason-first sections: the evidence read and the argument built. A pick
+  // without both of these is an assertion, not an analysis.
+  const reasonedFirst = isObj(a.data_read) && isObj(a.case_for)
+  // The three independent angles the verdict is meant to synthesise.
+  const analysed = isObj(a.form_analysis) && isObj(a.tactical_analysis) && isObj(a.market_analysis)
+  return confOk && reasoningOk && reasonedFirst && analysed
+}
+
 /* Drops cache entries that can't be rendered, wherever the cache is ingested.
  *
  * This is the half of the fix that reaches data already in the wild. A bad

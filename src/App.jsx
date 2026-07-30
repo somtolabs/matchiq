@@ -21,7 +21,7 @@ import {
 } from './lib/groq.js'
 import {
   calculateKelly, runMultiMarketAnalysis, updateAgentPerformance, autoResolve, countsTowardRecord,
-  edgeToOutcome, AGENT_PERF_EMPTY, hasVerdict, sanitizeAnalysisCache, readScoreline,
+  edgeToOutcome, AGENT_PERF_EMPTY, hasVerdict, isCompleteVerdict, sanitizeAnalysisCache, readScoreline,
   readGoalsMarkets,
 } from './lib/analysis.js'
 import {
@@ -6534,7 +6534,7 @@ function MatchIQ({ user, username, onUsernameChange }) {
       const isTransientMiss = (d) => {
         if (isJsonValidationFailure(d.error)) return true
         if (d.error) return false // a real error — surface it, don't retry
-        try { return !hasVerdict(extractFirstJsonObject(d.choices?.[0]?.message?.content)) }
+        try { return !isCompleteVerdict(extractFirstJsonObject(d.choices?.[0]?.message?.content)) }
         catch { return true }
       }
 
@@ -6566,8 +6566,14 @@ function MatchIQ({ user, username, onUsernameChange }) {
        * `recommendation.pick` and `.confidence` directly, so one such entry is a
        * permanent crash on Best Bets for that account, on any day its fixture is
        * back on the card. This is where that entry stops being created. */
-      if (!hasVerdict(parsed)) {
-        console.error('[groq] synthesis returned JSON with no usable recommendation — not cached')
+      /* isCompleteVerdict, not hasVerdict: the provider swap removed Groq's
+       * server-side JSON validation, so a 200 can now carry a pick with no
+       * reasoning, confidence or analysis behind it. That half-formed shape — a
+       * pick without the reasons that should precede it — must never be cached,
+       * written to the ledger or shown as a verdict. hasVerdict stays the lenient
+       * gate for rendering older stored reads; this is the strict write gate. */
+      if (!isCompleteVerdict(parsed)) {
+        console.error('[llm] synthesis returned a structurally-incomplete analysis (pick without full reasoning/analysis) — not cached')
         throw new Error(ANALYSIS_INCOMPLETE_MESSAGE)
       }
       /* Guard the numbers the model is most prone to inventing: with no odds
